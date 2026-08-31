@@ -4,11 +4,11 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { categories, getWords, isValidWord, normalizeWord, type Category } from '@/lib/game-data';
+import { categories, getWords, isBlockedWord, isPlausibleCategoryWord, isValidWord, normalizeWord, type Category } from '@/lib/game-data';
 
-type Player = { id: string; name: string; score: number; lives: number; joined_at: number };
+type Player = { id: string; user_id: string | null; name: string; is_bot: number; score: number; lives: number; joined_at: number };
 type Move = { id: string; word: string; valid: number; created_at: number; player_name: string };
-type RoomState = { room: { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null }; players: Player[]; moves: Move[] };
+type RoomState = { room: { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null }; players: Player[]; moves: Move[] };
 type OnlineSession = { code: string; playerId: string; state: RoomState };
 
 const playerColors = ['#d9ff64', '#ff8b72', '#70d7ff', '#c9a7ff', '#ffd05c', '#74f1b6'];
@@ -22,6 +22,7 @@ export function GameClient() {
   const [screen, setScreen] = useState<'home' | 'practice' | 'online'>('home');
   const [category, setCategory] = useState<Category>('animals');
   const [name, setName] = useState('Player');
+  const [userId, setUserId] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [roomDialog, setRoomDialog] = useState(false);
   const [roomTab, setRoomTab] = useState<'create' | 'join'>('create');
@@ -47,6 +48,10 @@ export function GameClient() {
   useEffect(() => {
     const storedName = window.localStorage.getItem('chain-clash-name');
     if (storedName) setName(storedName);
+    const storedUserId = window.localStorage.getItem('chain-clash-user-id');
+    const nextUserId = storedUserId || crypto.randomUUID();
+    window.localStorage.setItem('chain-clash-user-id', nextUserId);
+    setUserId(nextUserId);
     fetch('/api/game?leaderboard=1').then((response) => response.json()).then((data) => setLeaderboard(data.leaderboard ?? [])).catch(() => undefined);
   }, []);
 
@@ -90,7 +95,7 @@ export function GameClient() {
     const word = normalizeWord(practiceWord);
     if (!word.startsWith(currentLetter)) return losePracticeLife(`Start with “${currentLetter.toUpperCase()}”`);
     if (chain.includes(word)) return losePracticeLife('That word was already used');
-    if (!isValidWord(category, word)) return losePracticeLife(`“${practiceWord || 'That'}” is not in this category`);
+    if (!isValidWord(category, word) && (!isPlausibleCategoryWord(word) || isBlockedWord(word))) return losePracticeLife(`“${practiceWord || 'That'}” cannot be played`);
     const nextChain = [...chain, word];
     setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
     botMove(word.at(-1) ?? 'a', nextChain);
@@ -124,9 +129,10 @@ export function GameClient() {
     setLoading(true); setNotice('');
     window.localStorage.setItem('chain-clash-name', name);
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, name, category, code: roomCode }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, name, userId, category, code: roomCode }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Could not open the room.');
+      if (data.userId) { setUserId(data.userId); window.localStorage.setItem('chain-clash-user-id', data.userId); }
       setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setRoomDialog(false); setScreen('online');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not open the room.'); }
     finally { setLoading(false); }
@@ -145,8 +151,32 @@ export function GameClient() {
     finally { setLoading(false); }
   }
 
+  async function quickPlay() {
+    if (!userId) return;
+    setLoading(true); setNotice(''); window.localStorage.setItem('chain-clash-name', name);
+    try {
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'quick', name, userId, category }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Could not start a match.');
+      setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setScreen('online');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not start a match.'); }
+    finally { setLoading(false); }
+  }
+
+  async function addBot() {
+    if (!online) return;
+    setLoading(true); setNotice('');
+    try {
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code, playerId: online.playerId }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Could not add a bot.');
+      setOnline({ ...online, state: data.state });
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not add a bot.'); }
+    finally { setLoading(false); }
+  }
+
   if (screen === 'practice') return <PracticeGame category={category} chain={chain} currentLetter={currentLetter} word={practiceWord} setWord={setPracticeWord} submit={submitPractice} score={practiceScore} botScore={botScore} lives={practiceLives} botLives={botLives} turn={turn} timeLeft={timeLeft} status={practiceStatus} feedback={feedback} inputRef={inputRef} back={() => setScreen('home')} replay={() => resetPractice(category)} />;
-  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} refresh={refreshRoom} leave={() => { setOnline(null); setScreen('home'); }} />;
+  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} addBot={addBot} refresh={refreshRoom} leave={() => { setOnline(null); setScreen('home'); }} />;
 
   return (
     <main className="min-h-dvh overflow-hidden bg-background text-foreground">
@@ -161,10 +191,10 @@ export function GameClient() {
           <h1 className="text-balance text-[clamp(3.4rem,9vw,7rem)] font-black uppercase leading-[0.82] tracking-[-0.075em]">Think fast.<span className="block text-primary">Chain faster.</span></h1>
           <p className="mt-7 max-w-lg text-pretty text-base leading-7 text-muted-foreground sm:text-lg">Battle friends and rivals in rapid-fire word chains. One wrong letter and the crown is gone.</p>
           <div className="mt-8 grid gap-3 sm:grid-cols-2">
-            <Button onClick={() => resetPractice(category)} className="h-14 rounded-xl bg-primary px-6 text-base font-black uppercase text-primary-foreground shadow-[0_6px_0_#6f841e] transition hover:-translate-y-0.5 hover:bg-primary active:translate-y-1 active:shadow-none"><Gamepad2 className="size-5" /> Play now <ArrowRight className="ml-auto size-5" /></Button>
-            <Button onClick={() => { setRoomTab('create'); setRoomDialog(true); }} variant="outline" className="h-14 rounded-xl border-white/15 bg-white/5 px-6 text-base font-black uppercase hover:bg-white/10"><Users className="size-5 text-secondary" /> Online room</Button>
+            <Button disabled={!userId || loading} onClick={quickPlay} className="h-14 rounded-xl bg-primary px-6 text-base font-black uppercase text-primary-foreground shadow-[0_6px_0_#6f841e] transition hover:-translate-y-0.5 hover:bg-primary active:translate-y-1 active:shadow-none"><Gamepad2 className="size-5" /> Quick clash <ArrowRight className="ml-auto size-5" /></Button>
+            <Button onClick={() => resetPractice(category)} variant="outline" className="h-14 rounded-xl border-white/15 bg-white/5 px-6 text-base font-black uppercase hover:bg-white/10"><Bot className="size-5 text-secondary" /> Practice</Button>
           </div>
-          <div className="mt-5 flex flex-wrap gap-2">{(Object.keys(categories) as Category[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${category === item ? 'border-primary/40 bg-primary/12 text-primary' : 'border-white/10 bg-white/[0.03] text-muted-foreground hover:text-white'}`}>{categoryLabels[item]}</button>)}</div>
+          <div className="mt-5 flex flex-wrap items-center gap-2">{(Object.keys(categories) as Category[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${category === item ? 'border-primary/40 bg-primary/12 text-primary' : 'border-white/10 bg-white/[0.03] text-muted-foreground hover:text-white'}`}>{categoryLabels[item]}</button>)}<button onClick={() => { setRoomTab('create'); setRoomDialog(true); }} className="ml-1 text-xs font-bold text-secondary underline underline-offset-4">Play with friends</button></div>
         </div>
         <GamePreview />
       </section>
@@ -192,10 +222,12 @@ function PracticeGame(props: PracticeProps) {
   return <GameFrame title="Practice match" category={categoryLabels[props.category]} back={props.back}><div className="mx-auto w-full max-w-3xl"><div className="mb-4 grid grid-cols-2 gap-3"><PlayerCard name="You" score={props.score} lives={props.lives} active={props.turn === 'you'} color={playerColors[0]} /><PlayerCard name="WordBot" score={props.botScore} lives={props.botLives} active={props.turn === 'bot'} color={playerColors[2]} bot /></div><div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#0e1116] p-5 shadow-2xl sm:p-9"><div className="absolute inset-x-0 top-0 h-1 bg-white/5"><div className="h-full bg-secondary transition-all" style={{ width: `${props.timeLeft / 12 * 100}%` }} /></div><div className="flex items-center justify-between"><span className="rounded-full bg-white/5 px-3 py-1.5 text-xs font-bold">{props.turn === 'you' ? 'Your turn' : 'WordBot is thinking…'}</span><span className="font-mono text-lg font-black text-secondary">{props.timeLeft.toFixed(1)}s</span></div><div className="mt-8 flex min-h-12 flex-wrap items-center justify-center gap-2">{props.chain.slice(-5).map((item, index) => <span key={`${item}-${index}`} className="word-chip capitalize">{item}</span>)}</div>{props.status === 'playing' ? <div className="mx-auto mt-8 max-w-lg text-center"><p className="micro-label">Play a {categoryLabels[props.category].toLowerCase()} word starting with</p><div className="letter-prompt">{props.currentLetter}</div><form onSubmit={(event) => { event.preventDefault(); props.submit(); }} className="flex gap-2"><Input ref={props.inputRef} value={props.word} disabled={props.turn !== 'you'} onChange={(event) => props.setWord(event.target.value)} placeholder={`${props.currentLetter.toUpperCase()}…`} autoComplete="off" className="h-14 border-primary/30 bg-white/[0.04] px-4 text-lg font-bold focus-visible:ring-primary/20" /><Button type="submit" disabled={props.turn !== 'you' || !props.word.trim()} className="h-14 w-14 rounded-xl bg-primary text-primary-foreground hover:bg-primary" size="icon"><Send className="size-5" /></Button></form><p className="mt-3 min-h-5 text-sm font-semibold text-muted-foreground">{props.feedback || 'No repeats. Only letters count.'}</p></div> : <div className="mx-auto mt-10 max-w-md text-center">{props.status === 'won' ? <Trophy className="mx-auto size-14 text-primary" /> : <X className="mx-auto size-14 text-secondary" />}<h2 className="mt-4 text-4xl font-black uppercase">{props.status === 'won' ? 'You win!' : 'Game over'}</h2><p className="mt-2 text-muted-foreground">Final score: {props.score} points</p><Button onClick={props.replay} className="mt-6 h-12 rounded-xl bg-primary px-6 font-black uppercase text-primary-foreground hover:bg-primary"><RotateCcw /> Play again</Button></div>}</div></div></GameFrame>;
 }
 
-function OnlineGame({ session, name, notice, loading, submit, refresh, leave }: { session: OnlineSession; name: string; notice: string; loading: boolean; submit: (word: string) => void; refresh: () => void; leave: () => void }) {
-  const [word, setWord] = useState(''); const [copied, setCopied] = useState(false); const { room, players, moves } = session.state; const me = players.find((player) => player.id === session.playerId); const activePlayer = players.find((player) => player.id === room.turn_player_id); const winner = players.find((player) => player.id === room.winner_player_id); const isTurn = room.turn_player_id === session.playerId;
+function OnlineGame({ session, name, notice, loading, submit, addBot, refresh, leave }: { session: OnlineSession; name: string; notice: string; loading: boolean; submit: (word: string) => void; addBot: () => void; refresh: () => void; leave: () => void }) {
+  const [word, setWord] = useState(''); const [copied, setCopied] = useState(false); const [now, setNow] = useState(Date.now()); const { room, players, moves } = session.state; const activePlayer = players.find((player) => player.id === room.turn_player_id); const winner = players.find((player) => player.id === room.winner_player_id); const isTurn = room.turn_player_id === session.playerId;
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 100); return () => window.clearInterval(timer); }, []);
+  const seconds = room.turn_deadline ? Math.max(0, (room.turn_deadline - now) / 1000) : 0;
   const share = async () => { const text = `Join my Chain Clash room: ${room.code}`; const url = `${window.location.origin}?room=${room.code}`; if (navigator.share) await navigator.share({ title: 'Chain Clash', text, url }); else await navigator.clipboard.writeText(`${text} ${url}`); setCopied(true); setTimeout(() => setCopied(false), 1600); };
-  return <GameFrame title={`Room ${room.code}`} category={categoryLabels[room.category]} back={leave} action={<Button onClick={share} variant="outline" className="border-white/10 bg-white/5"><Share2 /> {copied ? 'Copied' : 'Invite'}</Button>}><div className="mx-auto w-full max-w-4xl"><div className="mb-4 flex gap-3 overflow-x-auto pb-1">{players.map((player, index) => <div key={player.id} className="min-w-[170px] flex-1"><PlayerCard name={player.id === session.playerId ? `${player.name} (you)` : player.name} score={player.score} lives={player.lives} active={player.id === room.turn_player_id} color={playerColors[index % playerColors.length]} /></div>)}</div><div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#0e1116] p-5 shadow-2xl sm:p-9">{room.status === 'waiting' ? <div className="py-16 text-center"><Users className="mx-auto size-14 text-primary" /><h2 className="mt-5 text-3xl font-black uppercase">Waiting for a rival</h2><p className="mt-2 text-muted-foreground">Share this code with a friend. The match starts when they join.</p><button onClick={share} className="mx-auto mt-6 flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-6 py-4 font-mono text-3xl font-black tracking-[0.2em] text-primary">{room.code}{copied ? <Check className="size-5" /> : <Copy className="size-5" />}</button><Button onClick={refresh} variant="ghost" className="mt-4 text-muted-foreground"><RotateCcw /> Check room</Button></div> : room.status === 'finished' ? <div className="py-16 text-center"><Crown className="mx-auto size-16 fill-primary text-primary" /><h2 className="mt-5 text-4xl font-black uppercase">{winner?.name ?? 'Winner'} wins!</h2><p className="mt-2 text-muted-foreground">The final chain had {moves.filter((move) => move.valid).length} accepted words.</p></div> : <><div className="flex items-center justify-between"><span className="rounded-full bg-white/5 px-3 py-1.5 text-xs font-bold">{isTurn ? 'Your turn' : `${activePlayer?.name ?? 'Player'} is thinking…`}</span><span className="flex items-center gap-2 text-xs font-bold text-primary"><span className="size-2 animate-pulse rounded-full bg-primary" /> Live</span></div><div className="mt-8 flex min-h-12 flex-wrap items-center justify-center gap-2">{moves.slice().reverse().filter((move) => move.valid).slice(-5).map((move) => <span key={move.id} className="word-chip capitalize">{move.word}</span>)}</div><div className="mx-auto mt-8 max-w-lg text-center"><p className="micro-label">Play a {categoryLabels[room.category].toLowerCase()} word starting with</p><div className="letter-prompt">{room.current_letter}</div><form onSubmit={(event) => { event.preventDefault(); if (word.trim()) { submit(word); setWord(''); } }} className="flex gap-2"><Input value={word} disabled={!isTurn || loading} onChange={(event) => setWord(event.target.value)} placeholder={`${room.current_letter.toUpperCase()}…`} className="h-14 border-primary/30 bg-white/[0.04] px-4 text-lg font-bold" /><Button type="submit" disabled={!isTurn || loading || !word.trim()} className="h-14 w-14 rounded-xl bg-primary text-primary-foreground hover:bg-primary" size="icon">{loading ? <LoaderCircle className="animate-spin" /> : <Send />}</Button></form><p className="mt-3 min-h-5 text-sm font-semibold text-muted-foreground">{notice || (isTurn ? `Go, ${name}!` : 'Room updates automatically.')}</p></div></>}</div></div></GameFrame>;
+  return <GameFrame title={`Room ${room.code}`} category={categoryLabels[room.category]} back={leave} action={<Button onClick={share} variant="outline" className="border-white/10 bg-white/5"><Share2 /> {copied ? 'Copied' : 'Invite'}</Button>}><div className="mx-auto w-full max-w-4xl"><div className="mb-4 flex gap-3 overflow-x-auto pb-1">{players.map((player, index) => <div key={player.id} className="min-w-[170px] flex-1"><PlayerCard name={player.id === session.playerId ? `${player.name} (you)` : player.name} score={player.score} lives={player.lives} active={player.id === room.turn_player_id} color={playerColors[index % playerColors.length]} bot={Boolean(player.is_bot)} /></div>)}</div><div className="relative overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#0e1116] p-5 shadow-2xl sm:p-9">{room.status === 'waiting' ? <div className="py-16 text-center"><Users className="mx-auto size-14 text-primary" /><h2 className="mt-5 text-3xl font-black uppercase">Waiting for a rival</h2><p className="mt-2 text-muted-foreground">Share this code with a friend, or add a bot and begin now.</p><button onClick={share} className="mx-auto mt-6 flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 px-6 py-4 font-mono text-3xl font-black tracking-[0.2em] text-primary">{room.code}{copied ? <Check className="size-5" /> : <Copy className="size-5" />}</button><div className="mt-5 flex justify-center gap-2"><Button onClick={addBot} disabled={loading} className="bg-primary font-black uppercase text-primary-foreground hover:bg-primary"><Bot /> Add bot</Button><Button onClick={refresh} variant="ghost" className="text-muted-foreground"><RotateCcw /> Check room</Button></div></div> : room.status === 'finished' ? <div className="py-16 text-center"><Crown className="mx-auto size-16 fill-primary text-primary" /><h2 className="mt-5 text-4xl font-black uppercase">{winner?.name ?? 'Winner'} wins!</h2><p className="mt-2 text-muted-foreground">The final chain had {moves.filter((move) => move.valid).length} accepted words.</p></div> : <><div className="flex items-center justify-between"><span className="rounded-full bg-white/5 px-3 py-1.5 text-xs font-bold">{isTurn ? 'Your turn' : `${activePlayer?.name ?? 'Player'} is thinking…`}</span><span className="font-mono text-lg font-black text-secondary">{seconds.toFixed(1)}s</span></div><div className="mt-2 h-1 overflow-hidden rounded-full bg-white/5"><div className="h-full bg-secondary transition-[width]" style={{ width: `${Math.min(100, seconds / 12 * 100)}%` }} /></div><div className="mt-8 flex min-h-12 flex-wrap items-center justify-center gap-2">{moves.slice().reverse().filter((move) => move.valid).slice(-5).map((move) => <span key={move.id} className="word-chip capitalize">{move.word}</span>)}</div><div className="mx-auto mt-8 max-w-lg text-center"><p className="micro-label">Play a {categoryLabels[room.category].toLowerCase()} word starting with</p><div className="letter-prompt">{room.current_letter}</div><form onSubmit={(event) => { event.preventDefault(); if (word.trim()) { submit(word); setWord(''); } }} className="flex gap-2"><Input value={word} disabled={!isTurn || loading} onChange={(event) => setWord(event.target.value)} placeholder={`${room.current_letter.toUpperCase()}…`} className="h-14 border-primary/30 bg-white/[0.04] px-4 text-lg font-bold" /><Button type="submit" disabled={!isTurn || loading || !word.trim()} className="h-14 w-14 rounded-xl bg-primary text-primary-foreground hover:bg-primary" size="icon">{loading ? <LoaderCircle className="animate-spin" /> : <Send />}</Button></form><p className="mt-3 min-h-5 text-sm font-semibold text-muted-foreground">{notice || (isTurn ? `Go, ${name}!` : 'Room updates automatically.')}</p></div></>}</div></div></GameFrame>;
 }
 
 function PlayerCard({ name, score, lives, active, color, bot = false }: { name: string; score: number; lives: number; active: boolean; color: string; bot?: boolean }) { return <div className={`rounded-xl border p-3 transition ${active ? 'border-primary/40 bg-primary/8 shadow-[0_0_25px_rgba(217,255,100,.08)]' : 'border-white/8 bg-white/[0.03]'}`}><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-lg text-sm font-black text-[#101318]" style={{ backgroundColor: color }}>{bot ? <Bot className="size-5" /> : name[0]?.toUpperCase()}</span><div className="min-w-0"><p className="truncate text-sm font-extrabold">{name}</p><p className="font-mono text-[11px] text-muted-foreground">{score} pts</p></div><span className="ml-auto"><Hearts lives={lives} /></span></div></div>; }
