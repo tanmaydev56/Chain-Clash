@@ -1,5 +1,5 @@
 import { getGameDb } from '@/lib/game-db';
-import { categories, getWords, isBlockedWord, isPlausibleCategoryWord, isValidWord, normalizeWord, type Category } from '@/lib/game-data';
+import { categories, getWords, isValidCategoryWord, normalizeWord, type Category } from '@/lib/game-data';
 
 type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
@@ -51,14 +51,13 @@ async function cacheVerdict(db: D1Database, category: Category, word: string, ve
     ON CONFLICT(category, word) DO UPDATE SET verdict = excluded.verdict, source = excluded.source, updated_at = excluded.updated_at`).bind(category, word, verdict, source, now).run();
 }
 
-async function validateWord(db: D1Database, category: Category, word: string, now: number) {
-  if (!word || isBlockedWord(word)) return { valid: false, source: 'blocked' };
+async function validateWord(db: D1Database, category: Category, rawWord: string, now: number) {
+  const word = normalizeWord(rawWord);
+  if (!isValidCategoryWord(category, rawWord)) return { valid: false, source: 'curated' };
   const cached = await db.prepare('SELECT verdict, source FROM word_cache WHERE category = ? AND word = ?').bind(category, word).first<{ verdict: string; source: string }>();
-  if (cached) return { valid: cached.verdict !== 'rejected', source: cached.source };
-  if (isValidWord(category, word)) { await cacheVerdict(db, category, word, 'accepted', 'curated', now); return { valid: true, source: 'curated' }; }
-  if (isPlausibleCategoryWord(word)) { await cacheVerdict(db, category, word, 'provisional', 'community', now); return { valid: true, source: 'community' }; }
-  await cacheVerdict(db, category, word, 'rejected', 'format', now);
-  return { valid: false, source: 'format' };
+  if (cached?.verdict === 'accepted' && cached.source === 'curated') return { valid: true, source: 'curated' };
+  await cacheVerdict(db, category, word, 'accepted', 'curated', now);
+  return { valid: true, source: 'curated' };
 }
 
 async function settleRoom(db: D1Database, code: string, now: number) {
@@ -161,13 +160,13 @@ export async function POST(request: Request) {
       return json({ state: await roomState(db, code, now) });
     }
     if (action === 'submit') {
-      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const word = normalizeWord(String(body.word ?? ''));
+      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const rawWord = String(body.word ?? ''); const word = normalizeWord(rawWord);
       await settleRoom(db, code, now); const room = await readRoom(db, code);
       if (!room || room.status !== 'active') return json({ error: 'This match is not active.' }, 409); if (room.turn_player_id !== playerId) return json({ error: 'Wait for your turn.' }, 409);
       const player = await db.prepare('SELECT * FROM players WHERE id = ? AND room_code = ?').bind(playerId, code).first<PlayerRow>();
       if (!player || player.lives < 1 || player.is_bot) return json({ error: 'Player is not active.' }, 403);
       const used = new Set((await db.prepare('SELECT word FROM moves WHERE room_code = ? AND valid = 1').bind(code).all<{ word: string }>()).results.map((row) => row.word));
-      const check = word.startsWith(room.current_letter) && !used.has(word) ? await validateWord(db, room.category, word, now) : { valid: false, source: 'rule' };
+      const check = word.startsWith(room.current_letter) && !used.has(word) ? await validateWord(db, room.category, rawWord, now) : { valid: false, source: 'rule' };
       const lives = check.valid ? player.lives : Math.max(0, player.lives - 1); const score = player.score + (check.valid ? word.length * 10 : 0); const players = (await readPlayers(db, code)).results;
       await db.batch([
         db.prepare('INSERT INTO moves (id, room_code, player_id, word, valid, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), code, playerId, word || '—', check.valid ? 1 : 0, now),

@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { categories, getWords, isBlockedWord, isPlausibleCategoryWord, isValidWord, normalizeWord, type Category } from '@/lib/game-data';
+import { categories, getWords, isValidCategoryWord, normalizeWord, type Category } from '@/lib/game-data';
 
 type Player = { id: string; user_id: string | null; name: string; is_bot: number; score: number; lives: number; joined_at: number };
 type Move = { id: string; word: string; valid: number; created_at: number; player_name: string };
@@ -95,7 +95,7 @@ export function GameClient() {
     const word = normalizeWord(practiceWord);
     if (!word.startsWith(currentLetter)) return losePracticeLife(`Start with “${currentLetter.toUpperCase()}”`);
     if (chain.includes(word)) return losePracticeLife('That word was already used');
-    if (!isValidWord(category, word) && (!isPlausibleCategoryWord(word) || isBlockedWord(word))) return losePracticeLife(`“${practiceWord || 'That'}” cannot be played`);
+    if (!isValidCategoryWord(category, practiceWord)) return losePracticeLife(`“${practiceWord || 'That'}” is not in the ${categoryLabels[category].toLowerCase()} dictionary`);
     const nextChain = [...chain, word];
     setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
     botMove(word.at(-1) ?? 'a', nextChain);
