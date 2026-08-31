@@ -15,13 +15,16 @@ export async function getGameDb() {
         current_letter TEXT NOT NULL DEFAULT 't',
         turn_player_id TEXT,
         winner_player_id TEXT,
+        turn_deadline INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`),
       db.prepare(`CREATE TABLE IF NOT EXISTS players (
         id TEXT PRIMARY KEY,
+        user_id TEXT,
         room_code TEXT NOT NULL,
         name TEXT NOT NULL,
+        is_bot INTEGER NOT NULL DEFAULT 0,
         score INTEGER NOT NULL DEFAULT 0,
         lives INTEGER NOT NULL DEFAULT 3,
         joined_at INTEGER NOT NULL,
@@ -41,8 +44,34 @@ export async function getGameDb() {
         best_score INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS leaderboard_entries (
+        user_id TEXT PRIMARY KEY,
+        player_name TEXT NOT NULL,
+        wins INTEGER NOT NULL DEFAULT 0,
+        best_score INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS word_cache (
+        category TEXT NOT NULL,
+        word TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        source TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (category, word)
+      )`),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_players_room_code ON players(room_code)'),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_moves_room_created ON moves(room_code, created_at)'),
+    ]);
+    await Promise.all([
+      db.prepare('ALTER TABLE rooms ADD COLUMN turn_deadline INTEGER').run().catch(() => undefined),
+      db.prepare('ALTER TABLE players ADD COLUMN user_id TEXT').run().catch(() => undefined),
+      db.prepare('ALTER TABLE players ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0').run().catch(() => undefined),
     ]);
     await db.prepare('PRAGMA optimize').run();
     ready = true;

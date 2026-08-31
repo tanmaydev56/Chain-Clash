@@ -15,6 +15,16 @@ export function isValidWord(category: Category, word: string) {
   return (categories[category] as readonly string[]).includes(normalizeWord(word));
 }
 
+export function isPlausibleCategoryWord(word: string) {
+  return /^[a-z]{2,32}$/.test(normalizeWord(word));
+}
+
+export const blockedWords = new Set(['ass', 'arse', 'bastard', 'bitch', 'cunt', 'damn', 'dick', 'fag', 'fuck', 'nigger', 'piss', 'shit', 'slut', 'whore']);
+
+export function isBlockedWord(word: string) {
+  return blockedWords.has(normalizeWord(word));
+}
+
 export function getWords(category: Category, letter: string, used: string[] = []) {
   const usedSet = new Set(used.map(normalizeWord));
   return (categories[category] as readonly string[]).filter((word) => word.startsWith(letter.toLowerCase()) && !usedSet.has(word));
