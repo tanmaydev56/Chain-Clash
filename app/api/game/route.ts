@@ -3,15 +3,28 @@ import { getGameDb } from '@/lib/game-db';
 import { categories, getWords, normalizeWord, type Category } from '@/lib/game-data';
 import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 
-type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; created_at: number; updated_at: number };
+type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
+type PlayerStatsRow = { games_played: number; wins: number; losses: number; best_score: number; total_score: number; xp: number; mmr: number; daily_streak: number; last_daily_key: string | null };
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const turnMs = 12_000;
 const botNames = ['WordBot', 'Lime Lynx', 'Coral Crow', 'Turbo Tapir', 'Neon Narwhal'];
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function json(data: unknown, status = 200) { return Response.json(data, { status }); }
 function cleanName(value: unknown) { return String(value ?? '').trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 16) || 'Player'; }
 function stableUserId(value: unknown) { const id = String(value ?? ''); return /^[a-f0-9-]{36}$/i.test(id) ? id : crypto.randomUUID(); }
+function utcDay(now: number) { return new Date(now).toISOString().slice(0, 10); }
+function previousUtcDay(day: string) { return new Date(`${day}T00:00:00.000Z`).getTime() - 86_400_000; }
+function dailyCategory(day: string): Category { return (Object.keys(categories) as Category[])[Number(day.replaceAll('-', '')) % Object.keys(categories).length]; }
+function weekKey(now: number) { const date = new Date(now); const day = date.getUTCDay() || 7; date.setUTCDate(date.getUTCDate() - day + 1); return date.toISOString().slice(0, 10); }
+function requestIp(request: Request) { return request.headers.get('CF-Connecting-IP') ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'; }
+function allowRequest(request: Request, action: string, now: number, limit: number, windowMs: number) {
+  const key = `${action}:${requestIp(request)}`; const current = rateBuckets.get(key);
+  if (!current || now >= current.resetAt) { rateBuckets.set(key, { count: 1, resetAt: now + windowMs }); return true; }
+  if (current.count >= limit) return false;
+  current.count += 1; return true;
+}
 
 async function createCode(db: D1Database) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -45,7 +58,36 @@ async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], curr
   if (winner?.user_id) {
     await db.prepare(`INSERT INTO leaderboard_entries (user_id, player_name, wins, best_score, updated_at) VALUES (?, ?, 1, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, winner.name, winner.score, now).run();
+    await db.prepare(`INSERT INTO weekly_leaderboard (user_id, week_key, player_name, wins, best_score, updated_at) VALUES (?, ?, ?, 1, ?, ?)
+      ON CONFLICT(user_id, week_key) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, weekKey(now), winner.name, winner.score, now).run();
   }
+  if (finished) await recordFinishedRoom(db, room, players, winner, now);
+}
+
+async function recordFinishedRoom(db: D1Database, room: RoomRow, players: PlayerRow[], winner: PlayerRow | null, now: number) {
+  const claimed = await db.prepare('UPDATE rooms SET stats_recorded = 1 WHERE code = ? AND stats_recorded = 0').bind(room.code).run();
+  if (!claimed.meta.changes) return;
+  const humans = players.filter((player) => player.user_id && !player.is_bot);
+  const statements: D1PreparedStatement[] = [];
+  for (const player of humans) {
+    const won = player.id === winner?.id ? 1 : 0;
+    const earnedXp = player.score + (won ? 100 : 25);
+    statements.push(db.prepare(`INSERT INTO player_stats (user_id, games_played, wins, losses, best_score, total_score, xp, updated_at)
+      VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        games_played = games_played + 1, wins = wins + excluded.wins, losses = losses + excluded.losses,
+        best_score = MAX(best_score, excluded.best_score), total_score = total_score + excluded.total_score,
+        xp = xp + excluded.xp, mmr = MAX(100, mmr + ?), updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now, won ? 25 : -20));
+    if (room.challenge_key) {
+      const yesterday = new Date(previousUtcDay(room.challenge_key)).toISOString().slice(0, 10);
+      statements.push(db.prepare(`INSERT OR IGNORE INTO daily_attempts (user_id, challenge_key, score, won, completed_at) VALUES (?, ?, ?, ?, ?)`)
+        .bind(player.user_id, room.challenge_key, player.score, won, now));
+      statements.push(db.prepare(`UPDATE player_stats SET
+        daily_streak = CASE WHEN last_daily_key = ? THEN daily_streak WHEN last_daily_key = ? THEN daily_streak + 1 ELSE 1 END,
+        last_daily_key = ?, updated_at = ? WHERE user_id = ?`).bind(room.challenge_key, yesterday, room.challenge_key, now, player.user_id));
+    }
+  }
+  if (statements.length) await db.batch(statements);
 }
 
 // Layered validation: pre-checks + seed list (instant) → word_cache (one D1
@@ -119,8 +161,20 @@ export async function GET(request: Request) {
   try {
     const db = await getGameDb(); const url = new URL(request.url); const now = Date.now();
     if (url.searchParams.get('leaderboard') === '1') {
-      const rows = await db.prepare('SELECT player_name, wins, best_score FROM leaderboard_entries ORDER BY wins DESC, best_score DESC LIMIT 10').all();
+      const rows = await db.prepare('SELECT player_name, wins, best_score FROM weekly_leaderboard WHERE week_key = ? ORDER BY wins DESC, best_score DESC LIMIT 10').bind(weekKey(now)).all();
       return json({ leaderboard: rows.results });
+    }
+    if (url.searchParams.get('profile') === '1') {
+      const userId = stableUserId(url.searchParams.get('userId'));
+      const stats = await db.prepare('SELECT games_played, wins, losses, best_score, total_score, xp, mmr, daily_streak, last_daily_key FROM player_stats WHERE user_id = ?').bind(userId).first<PlayerStatsRow>();
+      const user = await db.prepare('SELECT display_name FROM users WHERE id = ?').bind(userId).first<{ display_name: string }>();
+      const xp = stats?.xp ?? 0;
+      return json({ name: user?.display_name ?? 'Player', stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, mmr: stats?.mmr ?? 1000, level: Math.floor(Math.sqrt(xp / 100)) + 1, dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
+    }
+    if (url.searchParams.get('daily') === '1') {
+      const userId = stableUserId(url.searchParams.get('userId')); const key = utcDay(now);
+      const attempt = await db.prepare('SELECT score, won, completed_at FROM daily_attempts WHERE user_id = ? AND challenge_key = ?').bind(userId, key).first();
+      return json({ key, category: dailyCategory(key), completed: Boolean(attempt), attempt: attempt ?? null });
     }
     const code = (url.searchParams.get('code') ?? '').trim().toUpperCase();
     if (!code) return json({ error: 'Room code is required.' }, 400);
@@ -131,6 +185,53 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ''); const db = await getGameDb(); const now = Date.now();
+    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], report: [5, 3_600_000] };
+    const limit = limits[action];
+    if (limit && !allowRequest(request, action, now, limit[0], limit[1])) return json({ error: 'Too many requests. Please wait a moment.' }, 429);
+    if (action === 'delete_account') {
+      const userId = stableUserId(body.userId);
+      const seats = (await db.prepare('SELECT id FROM players WHERE user_id = ?').bind(userId).all<{ id: string }>()).results;
+      const statements: D1PreparedStatement[] = [
+        db.prepare('DELETE FROM leaderboard_entries WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM player_stats WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM daily_attempts WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM users WHERE id = ?').bind(userId),
+      ];
+      for (const seat of seats) {
+        statements.push(db.prepare('DELETE FROM moves WHERE player_id = ?').bind(seat.id));
+        statements.push(db.prepare('DELETE FROM players WHERE id = ?').bind(seat.id));
+      }
+      await db.batch(statements);
+      return json({ deleted: true });
+    }
+    if (action === 'daily') {
+      const name = cleanName(body.name); const userId = stableUserId(body.userId); const challengeKey = utcDay(now);
+      const completed = await db.prepare('SELECT 1 FROM daily_attempts WHERE user_id = ? AND challenge_key = ?').bind(userId, challengeKey).first();
+      if (completed) return json({ error: 'You have already completed today’s Daily Clash.' }, 409);
+      const active = await db.prepare(`SELECT rooms.* FROM rooms JOIN players ON players.room_code = rooms.code
+        WHERE players.user_id = ? AND rooms.challenge_key = ? AND rooms.status IN ('waiting', 'active') LIMIT 1`).bind(userId, challengeKey).first<RoomRow>();
+      if (active) {
+        const seat = await db.prepare('SELECT id FROM players WHERE room_code = ? AND user_id = ?').bind(active.code, userId).first<{ id: string }>();
+        if (seat) return json({ code: active.code, playerId: seat.id, userId, state: await roomState(db, active.code, now), resumed: true });
+      }
+      const code = await createCode(db); const playerId = crypto.randomUUID(); const category = dailyCategory(challengeKey);
+      await upsertUser(db, userId, name, now);
+      await db.batch([
+        db.prepare(`INSERT INTO rooms (code, host_player_id, category, status, current_letter, turn_player_id, is_public, turn_deadline, challenge_key, created_at, updated_at) VALUES (?, ?, ?, 'active', 't', ?, 0, ?, ?, ?, ?)`).bind(code, playerId, category, playerId, now + turnMs, challengeKey, now, now),
+        db.prepare(`INSERT INTO players (id, user_id, room_code, name, is_bot, score, lives, joined_at, last_seen_at) VALUES (?, ?, ?, ?, 0, 0, 3, ?, ?)`).bind(playerId, userId, code, name, now, now),
+        botInsert(db, code, 0, now),
+      ]);
+      return json({ code, playerId, userId, state: await roomState(db, code, now), daily: { key: challengeKey, category } }, 201);
+    }
+    if (action === 'report') {
+      const code = String(body.code ?? '').trim().toUpperCase(); const reporterUserId = stableUserId(body.userId); const playerId = typeof body.playerId === 'string' ? body.playerId : null;
+      const reason = String(body.reason ?? '').trim().replace(/[^a-zA-Z0-9 .,!?'-]/g, '').slice(0, 240);
+      const seat = await db.prepare('SELECT id FROM players WHERE room_code = ? AND user_id = ?').bind(code, reporterUserId).first();
+      if (!seat) return json({ error: 'Only room participants can file a report.' }, 403);
+      if (!reason) return json({ error: 'Tell us what happened.' }, 400);
+      await db.prepare('INSERT INTO reports (id, room_code, reporter_user_id, reported_player_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), code, reporterUserId, playerId, reason, now).run();
+      return json({ reported: true });
+    }
     if (action === 'create' || action === 'quick' || action === 'matchmake') {
       const name = cleanName(body.name); const userId = stableUserId(body.userId); const category = String(body.category ?? 'animals') as Category;
       if (!(category in categories)) return json({ error: 'Invalid category.' }, 400);
@@ -138,6 +239,8 @@ export async function POST(request: Request) {
         const candidates = (await db.prepare(`SELECT * FROM rooms WHERE is_public = 1 AND status = 'active' ORDER BY updated_at DESC LIMIT 12`).all<RoomRow>()).results;
         for (const room of candidates) {
           const players = (await readPlayers(db, room.code)).results;
+          const existing = players.find((player) => player.user_id === userId);
+          if (existing) return json({ code: room.code, playerId: existing.id, userId, state: await roomState(db, room.code, now), resumed: true });
           const bot = players.find((player) => player.is_bot);
           if (!bot || players.length >= 6) continue;
           const playerId = crypto.randomUUID();
@@ -180,18 +283,20 @@ export async function POST(request: Request) {
       return json({ code, playerId, userId, state: await roomState(db, code, now) });
     }
     if (action === 'add_bot') {
-      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const room = await readRoom(db, code);
+      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const userId = stableUserId(body.userId); const room = await readRoom(db, code);
       if (!room || room.host_player_id !== playerId || room.status === 'finished') return json({ error: 'Only the host can add a bot.' }, 403);
+      const host = await db.prepare('SELECT id FROM players WHERE id = ? AND room_code = ? AND user_id = ?').bind(playerId, code, userId).first();
+      if (!host) return json({ error: 'Only the host can add a bot.' }, 403);
       const players = (await readPlayers(db, code)).results; if (players.length >= 6) return json({ error: 'That room is full.' }, 409);
       await botInsert(db, code, players.filter((player) => player.is_bot).length, now).run();
       if (room.status === 'waiting') await db.prepare(`UPDATE rooms SET status = 'active', turn_player_id = host_player_id, turn_deadline = ?, updated_at = ? WHERE code = ?`).bind(now + turnMs, now, code).run();
       return json({ state: await roomState(db, code, now) });
     }
     if (action === 'submit') {
-      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const rawWord = String(body.word ?? ''); const word = normalizeWord(rawWord);
+      const code = String(body.code ?? '').trim().toUpperCase(); const playerId = String(body.playerId ?? ''); const userId = stableUserId(body.userId); const rawWord = String(body.word ?? ''); const word = normalizeWord(rawWord);
       await settleRoom(db, code, now); const room = await readRoom(db, code);
       if (!room || room.status !== 'active') return json({ error: 'This match is not active.' }, 409); if (room.turn_player_id !== playerId) return json({ error: 'Wait for your turn.' }, 409);
-      const player = await db.prepare('SELECT * FROM players WHERE id = ? AND room_code = ?').bind(playerId, code).first<PlayerRow>();
+      const player = await db.prepare('SELECT * FROM players WHERE id = ? AND room_code = ? AND user_id = ?').bind(playerId, code, userId).first<PlayerRow>();
       if (!player || player.lives < 1 || player.is_bot) return json({ error: 'Player is not active.' }, 403);
       const used = new Set((await db.prepare('SELECT word FROM moves WHERE room_code = ? AND valid = 1').bind(code).all<{ word: string }>()).results.map((row) => row.word));
       const check = word.startsWith(room.current_letter) && !used.has(word) ? await validateWord(db, room.category, rawWord, now) : { valid: false, source: 'rule' };

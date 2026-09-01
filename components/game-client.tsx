@@ -1,9 +1,10 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Flame, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PrivacyConsent } from '@/components/privacy-consent';
 import { categories, getWords, isValidCategoryWord, normalizeWord, type Category } from '@/lib/game-data';
 
 type Player = { id: string; user_id: string | null; name: string; is_bot: number; score: number; lives: number; joined_at: number };
@@ -13,6 +14,15 @@ type OnlineSession = { code: string; playerId: string; state: RoomState };
 
 const playerColors = ['#d9ff64', '#ff8b72', '#70d7ff', '#c9a7ff', '#ffd05c', '#74f1b6'];
 const categoryLabels: Record<Category, string> = { animals: 'Animals', food: 'Food', countries: 'Countries', things: 'Everyday things' };
+
+function playTone(enabled: boolean, frequency: number, duration = 0.08) {
+  if (!enabled || typeof window === 'undefined') return;
+  const Audio = window.AudioContext ?? window.webkitAudioContext;
+  if (!Audio) return;
+  const context = new Audio(); const oscillator = context.createOscillator(); const gain = context.createGain();
+  oscillator.frequency.value = frequency; gain.gain.setValueAtTime(0.055, context.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration);
+  oscillator.connect(gain); gain.connect(context.destination); oscillator.start(); oscillator.stop(context.currentTime + duration); oscillator.addEventListener('ended', () => void context.close());
+}
 
 function Hearts({ lives }: { lives: number }) {
   return <span className="flex gap-0.5" aria-label={`${lives} lives remaining`}>{[0, 1, 2].map((index) => <Heart key={index} className={`size-3.5 ${index < lives ? 'fill-secondary text-secondary' : 'text-white/15'}`} />)}</span>;
@@ -30,6 +40,9 @@ export function GameClient() {
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState<OnlineSession | null>(null);
   const [leaderboard, setLeaderboard] = useState<Array<{ player_name: string; wins: number; best_score: number }>>([]);
+  const [profile, setProfile] = useState<{ stats: { gamesPlayed: number; wins: number; bestScore: number; xp: number; mmr: number; level: number; dailyStreak: number } } | null>(null);
+  const [daily, setDaily] = useState<{ key: string; category: Category; completed: boolean } | null>(null);
+  const [soundOn, setSoundOn] = useState(true);
 
   const [chain, setChain] = useState<string[]>(['tiger']);
   const [practiceWord, setPracticeWord] = useState('');
@@ -48,6 +61,7 @@ export function GameClient() {
 
   useEffect(() => {
     const storedName = window.localStorage.getItem('chain-clash-name');
+    setSoundOn(window.localStorage.getItem('chain-clash-sound') !== 'off');
     if (storedName) setName(storedName);
     const storedUserId = window.localStorage.getItem('chain-clash-user-id');
     const nextUserId = storedUserId || crypto.randomUUID();
@@ -63,6 +77,8 @@ export function GameClient() {
       })
       .catch(() => undefined);
     fetch('/api/game?leaderboard=1').then((response) => response.json()).then((data) => setLeaderboard(data.leaderboard ?? [])).catch(() => undefined);
+    fetch(`/api/game?profile=1&userId=${encodeURIComponent(nextUserId)}`).then((response) => response.json()).then((data) => setProfile(data)).catch(() => undefined);
+    fetch(`/api/game?daily=1&userId=${encodeURIComponent(nextUserId)}`).then((response) => response.json()).then((data) => setDaily(data)).catch(() => undefined);
   }, []);
 
   useEffect(() => { if (online?.code) window.localStorage.setItem('chain-clash-room', online.code); }, [online?.code]);
@@ -75,6 +91,7 @@ export function GameClient() {
   }, [category]);
 
   const losePracticeLife = useCallback((message: string) => {
+    playTone(soundOn, 145, 0.18); if (navigator.vibrate) navigator.vibrate(90);
     setFeedback(message);
     setPracticeLives((lives) => {
       const next = lives - 1;
@@ -82,7 +99,7 @@ export function GameClient() {
       return Math.max(0, next);
     });
     setTimeLeft(12);
-  }, []);
+  }, [soundOn]);
 
   const botMove = useCallback((nextLetter: string, usedChain: string[]) => {
     setTimeout(() => {
@@ -110,9 +127,9 @@ export function GameClient() {
     if (chain.includes(word)) return losePracticeLife('That word was already used');
     if (!isValidCategoryWord(category, practiceWord)) return losePracticeLife(`“${practiceWord || 'That'}” is not in the ${categoryLabels[category].toLowerCase()} dictionary`);
     const nextChain = [...chain, word];
-    setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
+    playTone(soundOn, 660); if (navigator.vibrate) navigator.vibrate(18); setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
     botMove(word.at(-1) ?? 'a', nextChain);
-  }, [botMove, category, chain, currentLetter, losePracticeLife, practiceStatus, practiceWord, timeLeft, turn]);
+  }, [botMove, category, chain, currentLetter, losePracticeLife, practiceStatus, practiceWord, soundOn, timeLeft, turn]);
 
   useEffect(() => {
     if (screen !== 'practice' || practiceStatus !== 'playing' || turn !== 'you') return;
@@ -156,10 +173,11 @@ export function GameClient() {
     if (!online) return;
     setLoading(true); setNotice('');
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', code: online.code, playerId: online.playerId, word }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', code: online.code, playerId: online.playerId, userId, word }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Move rejected.');
       setOnline({ ...online, state: data.state });
+      playTone(soundOn, data.valid ? 660 : 145, data.valid ? 0.08 : 0.18); if (navigator.vibrate) navigator.vibrate(data.valid ? 18 : 90);
       setNotice(data.valid ? 'Great chain!' : 'Invalid word — one life lost.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Move rejected.'); }
     finally { setLoading(false); }
@@ -178,11 +196,24 @@ export function GameClient() {
     finally { setLoading(false); }
   }
 
+  async function dailyPlay() {
+    if (!userId || daily?.completed) return;
+    resumeAllowedRef.current = false;
+    setLoading(true); setNotice(''); window.localStorage.setItem('chain-clash-name', name);
+    try {
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'daily', name, userId }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? 'Could not start the Daily Clash.');
+      setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setScreen('online');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not start the Daily Clash.'); }
+    finally { setLoading(false); }
+  }
+
   async function addBot() {
     if (!online) return;
     setLoading(true); setNotice('');
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code, playerId: online.playerId }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code, playerId: online.playerId, userId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Could not add a bot.');
       setOnline({ ...online, state: data.state });
@@ -198,7 +229,7 @@ export function GameClient() {
       <div className="noise" />
       <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
         <div className="flex items-center gap-3"><Logo /><span className="text-lg font-black uppercase tracking-[-0.04em]">Chain Clash</span></div>
-        <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span>
+        <div className="flex items-center gap-2"><span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span><Button aria-label={soundOn ? 'Mute game sounds' : 'Enable game sounds'} onClick={() => { const next = !soundOn; setSoundOn(next); window.localStorage.setItem('chain-clash-sound', next ? 'on' : 'off'); if (next) playTone(true, 520); }} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground">{soundOn ? <Volume2 /> : <VolumeX />}</Button></div>
       </header>
       <section className="relative z-10 mx-auto grid w-full max-w-7xl gap-10 px-5 pb-12 pt-7 lg:grid-cols-[0.82fr_1.18fr] lg:items-center lg:px-8 lg:pt-12">
         <div className="max-w-xl">
@@ -209,6 +240,7 @@ export function GameClient() {
             <Button disabled={!userId || loading} onClick={quickPlay} className="h-14 rounded-xl bg-primary px-6 text-base font-black uppercase text-primary-foreground shadow-[0_6px_0_#6f841e] transition hover:-translate-y-0.5 hover:bg-primary active:translate-y-1 active:shadow-none"><Gamepad2 className="size-5" /> Quick clash <ArrowRight className="ml-auto size-5" /></Button>
             <Button onClick={() => resetPractice(category)} variant="outline" className="h-14 rounded-xl border-white/15 bg-white/5 px-6 text-base font-black uppercase hover:bg-white/10"><Bot className="size-5 text-secondary" /> Practice</Button>
           </div>
+          {daily && <div className="mt-4 flex items-center gap-3 rounded-xl border border-secondary/20 bg-secondary/8 p-3 text-sm"><Flame className="size-5 shrink-0 text-secondary" /><div className="min-w-0"><p className="font-black uppercase">Daily clash · {categoryLabels[daily.category]}</p><p className="text-xs text-muted-foreground">{daily.completed ? 'Completed for today — come back tomorrow.' : 'One ranked run today. Finish it to grow your streak.'}</p></div><Button disabled={!userId || loading || daily.completed} onClick={dailyPlay} variant="outline" className="ml-auto shrink-0 border-secondary/30 bg-transparent font-black uppercase text-secondary hover:bg-secondary/10">{daily.completed ? 'Done' : 'Play'}</Button></div>}
           <div className="mt-5 flex flex-wrap items-center gap-2">{(Object.keys(categories) as Category[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${category === item ? 'border-primary/40 bg-primary/12 text-primary' : 'border-white/10 bg-white/[0.03] text-muted-foreground hover:text-white'}`}>{categoryLabels[item]}</button>)}<button onClick={() => { setRoomTab('create'); setRoomDialog(true); }} className="ml-1 text-xs font-bold text-secondary underline underline-offset-4">Play with friends</button></div>
         </div>
         <GamePreview />
@@ -218,14 +250,18 @@ export function GameClient() {
         {[['01', 'Pick a category', 'Animals, food, countries and everyday things.'], ['02', 'Chain the word', 'Your answer starts with the last letter played.'], ['03', 'Outlast rivals', 'Three lives. Twelve seconds. No repeats.']].map(([number, title, copy]) => <div key={number} className="rounded-2xl border border-white/8 bg-white/[0.025] p-5"><span className="font-mono text-xs font-black text-primary">{number}</span><h2 className="mt-4 text-lg font-black uppercase">{title}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{copy}</p></div>)}
       </section>
 
+      {profile && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-6 sm:px-8"><div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/8 bg-white/[0.025] p-4 sm:grid-cols-6"><Stat label="Level" value={profile.stats.level} /><Stat label="XP" value={profile.stats.xp} /><Stat label="Rank" value={profile.stats.mmr} /><Stat label="Wins" value={`${profile.stats.wins}/${profile.stats.gamesPlayed}`} /><Stat label="Best" value={profile.stats.bestScore} /><Stat label="Streak" value={`${profile.stats.dailyStreak}d`} /></div></section>}
+
       {leaderboard.length > 0 && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-16 sm:px-8"><div className="rounded-2xl border border-white/8 bg-white/[0.025] p-5"><div className="flex items-center gap-2"><Trophy className="size-5 text-primary" /><h2 className="font-black uppercase">Weekly champions</h2></div><div className="mt-4 grid gap-2 sm:grid-cols-3">{leaderboard.slice(0, 3).map((row, index) => <div key={row.player_name} className="flex items-center gap-3 rounded-xl bg-black/20 p-3"><span className="grid size-8 place-items-center rounded-lg bg-primary/10 font-mono text-xs font-black text-primary">#{index + 1}</span><span className="font-bold">{row.player_name}</span><span className="ml-auto text-xs text-muted-foreground">{row.wins} wins</span></div>)}</div></div></section>}
 
       {roomDialog && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setRoomDialog(false); }}><section role="dialog" aria-modal="true" aria-labelledby="room-title" className="relative w-full max-w-md rounded-2xl border border-white/10 bg-[#171b22] p-5 shadow-2xl"><Button onClick={() => setRoomDialog(false)} variant="ghost" size="icon-sm" className="absolute right-3 top-3"><X /></Button><h2 id="room-title" className="text-2xl font-black uppercase tracking-tight">Play online</h2><p className="mt-2 text-sm text-muted-foreground">Create a private room or join your friends with a six-character code.</p><div className="mt-5 grid grid-cols-2 gap-2 rounded-xl bg-black/20 p-1">{(['create', 'join'] as const).map((tab) => <button key={tab} onClick={() => { setRoomTab(tab); setNotice(''); }} className={`rounded-lg px-3 py-2 text-sm font-black uppercase ${roomTab === tab ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>{tab}</button>)}</div><div className="mt-5 space-y-4"><label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">Your name<Input value={name} onChange={(event) => setName(event.target.value)} maxLength={16} className="mt-2 h-12 border-white/12 bg-white/5 text-base" /></label>{roomTab === 'join' && <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">Room code<Input value={roomCode} onChange={(event) => setRoomCode(event.target.value.toUpperCase())} maxLength={6} placeholder="ABC123" className="mt-2 h-12 border-white/12 bg-white/5 font-mono text-lg font-black uppercase tracking-[0.2em]" /></label>}{roomTab === 'create' && <div><p className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Category</p><div className="grid grid-cols-2 gap-2">{(Object.keys(categories) as Category[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-xl border p-3 text-left text-sm font-bold ${category === item ? 'border-primary/50 bg-primary/10 text-primary' : 'border-white/10 bg-white/[0.03]'}`}>{categoryLabels[item]}</button>)}</div></div>}{notice && <p className="rounded-lg bg-secondary/10 p-3 text-sm font-semibold text-secondary">{notice}</p>}<Button disabled={loading || (roomTab === 'join' && roomCode.length !== 6)} onClick={() => roomAction(roomTab)} className="h-12 w-full rounded-xl bg-primary font-black uppercase text-primary-foreground hover:bg-primary">{loading ? <LoaderCircle className="animate-spin" /> : roomTab === 'create' ? <><Sparkles /> Create room</> : <><Send /> Join match</>}</Button></div></section></div>}
+      <PrivacyConsent />
     </main>
   );
 }
 
 function Logo() { return <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-[0_6px_0_#6f841e]"><Swords className="size-5" strokeWidth={2.8} /></span>; }
+function Stat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-xl bg-black/20 p-3 text-center"><p className="font-mono text-lg font-black text-primary">{value}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p></div>; }
 
 function GamePreview() {
   const previewPlayers = [{ name: 'You', score: 420 }, { name: 'Mira', score: 380 }, { name: 'WordBot', score: 260 }];
