@@ -16,7 +16,7 @@
 
 import { categories, isBlockedWord, isWellFormedWord, normalizeWord, type Category } from './game-data.ts';
 
-export type ValidationSource = 'malformed' | 'blocked' | 'seed' | 'cache' | 'ai' | 'fallback';
+export type ValidationSource = 'malformed' | 'blocked' | 'seed' | 'cache' | 'ai' | 'workers-ai' | 'fallback';
 export type ValidationResult = { valid: boolean; source: ValidationSource; word: string };
 
 // Minimal shape we need from D1 so this module stays unit-testable without a
@@ -36,6 +36,7 @@ export type ValidateOptions = {
   fallbackAccept?: boolean;
   aiModel?: string;
   timeoutMs?: number;
+  judge?: (category: Category, word: string, timeoutMs: number) => Promise<boolean | null>;
 };
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -49,6 +50,8 @@ const categoryPrompt: Record<Category, string> = {
   countries: 'a sovereign country or widely recognized nation (current or very well known)',
   things: 'a common, concrete, everyday physical object (a tangible thing you could point at)',
 };
+
+export function categoryValidationDefinition(category: Category) { return categoryPrompt[category]; }
 
 // --- Layers 1 & 2: pure, synchronous, no I/O. Fully unit-testable. -----------
 
@@ -73,7 +76,7 @@ export async function validateCategoryWord(
   if (decided) return decided;
 
   const word = normalizeWord(raw);
-  const { cache = null, aiKey = null, fallbackAccept = false } = options;
+  const { cache = null, aiKey = null, fallbackAccept = false, judge = null } = options;
 
   // Layer 3: cache of prior verdicts (seed hits never reach here).
   if (cache) {
@@ -81,7 +84,16 @@ export async function validateCategoryWord(
     if (cached !== null) return { valid: cached, source: 'cache', word };
   }
 
-  // Layer 4: AI judge. Only runs for words we have never seen before.
+  // Layer 4: native/runtime judge. Realtime uses Workers AI through this hook.
+  if (judge) {
+    const verdict = await judge(category, word, options.timeoutMs ?? DEFAULT_TIMEOUT_MS).catch(() => null);
+    if (verdict !== null) {
+      if (cache) await cache.put(category, word, verdict, 'workers-ai').catch(() => undefined);
+      return { valid: verdict, source: 'workers-ai', word };
+    }
+  }
+
+  // Optional external AI judge for the legacy polling path.
   if (aiKey) {
     const verdict = await askAi(category, word, aiKey, options).catch(() => null);
     if (verdict !== null) {

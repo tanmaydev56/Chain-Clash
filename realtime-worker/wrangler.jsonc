@@ -1,0 +1,22 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "chain-clash-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "APP_ORIGIN": "http://localhost:3000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "site-creator-d1",
+      "database_id": "00000000-0000-4000-8000-000000000000"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "ChainClashRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChainClashRoom"] }],
+  "ai": { "binding": "AI" }
+}
