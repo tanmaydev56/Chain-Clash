@@ -10,6 +10,8 @@ export const rooms = sqliteTable('rooms', {
   winnerPlayerId: text('winner_player_id'),
   isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
   turnDeadline: integer('turn_deadline'),
+  challengeKey: text('challenge_key'),
+  statsRecorded: integer('stats_recorded', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
@@ -51,3 +53,24 @@ export const wordCache = sqliteTable('word_cache', {
   source: text('source').notNull(),
   updatedAt: integer('updated_at').notNull(),
 }, (table) => [uniqueIndex('uq_word_cache_category_word').on(table.category, table.word)]);
+
+export const playerStats = sqliteTable('player_stats', {
+  userId: text('user_id').primaryKey(),
+  gamesPlayed: integer('games_played').notNull().default(0),
+  wins: integer('wins').notNull().default(0),
+  losses: integer('losses').notNull().default(0),
+  bestScore: integer('best_score').notNull().default(0),
+  totalScore: integer('total_score').notNull().default(0),
+  xp: integer('xp').notNull().default(0),
+  dailyStreak: integer('daily_streak').notNull().default(0),
+  lastDailyKey: text('last_daily_key'),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const dailyAttempts = sqliteTable('daily_attempts', {
+  userId: text('user_id').notNull(),
+  challengeKey: text('challenge_key').notNull(),
+  score: integer('score').notNull(),
+  won: integer('won', { mode: 'boolean' }).notNull(),
+  completedAt: integer('completed_at').notNull(),
+}, (table) => [uniqueIndex('uq_daily_attempt_user_challenge').on(table.userId, table.challengeKey)]);

@@ -3,8 +3,9 @@ import { getGameDb } from '@/lib/game-db';
 import { categories, getWords, normalizeWord, type Category } from '@/lib/game-data';
 import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 
-type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; created_at: number; updated_at: number };
+type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
+type PlayerStatsRow = { games_played: number; wins: number; losses: number; best_score: number; total_score: number; xp: number; daily_streak: number; last_daily_key: string | null };
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const turnMs = 12_000;
 const botNames = ['WordBot', 'Lime Lynx', 'Coral Crow', 'Turbo Tapir', 'Neon Narwhal'];
@@ -12,6 +13,9 @@ const botNames = ['WordBot', 'Lime Lynx', 'Coral Crow', 'Turbo Tapir', 'Neon Nar
 function json(data: unknown, status = 200) { return Response.json(data, { status }); }
 function cleanName(value: unknown) { return String(value ?? '').trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 16) || 'Player'; }
 function stableUserId(value: unknown) { const id = String(value ?? ''); return /^[a-f0-9-]{36}$/i.test(id) ? id : crypto.randomUUID(); }
+function utcDay(now: number) { return new Date(now).toISOString().slice(0, 10); }
+function previousUtcDay(day: string) { return new Date(`${day}T00:00:00.000Z`).getTime() - 86_400_000; }
+function dailyCategory(day: string): Category { return (Object.keys(categories) as Category[])[Number(day.replaceAll('-', '')) % Object.keys(categories).length]; }
 
 async function createCode(db: D1Database) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -46,6 +50,33 @@ async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], curr
     await db.prepare(`INSERT INTO leaderboard_entries (user_id, player_name, wins, best_score, updated_at) VALUES (?, ?, 1, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, winner.name, winner.score, now).run();
   }
+  if (finished) await recordFinishedRoom(db, room, players, winner, now);
+}
+
+async function recordFinishedRoom(db: D1Database, room: RoomRow, players: PlayerRow[], winner: PlayerRow | null, now: number) {
+  const claimed = await db.prepare('UPDATE rooms SET stats_recorded = 1 WHERE code = ? AND stats_recorded = 0').bind(room.code).run();
+  if (!claimed.meta.changes) return;
+  const humans = players.filter((player) => player.user_id && !player.is_bot);
+  const statements: D1PreparedStatement[] = [];
+  for (const player of humans) {
+    const won = player.id === winner?.id ? 1 : 0;
+    const earnedXp = player.score + (won ? 100 : 25);
+    statements.push(db.prepare(`INSERT INTO player_stats (user_id, games_played, wins, losses, best_score, total_score, xp, updated_at)
+      VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        games_played = games_played + 1, wins = wins + excluded.wins, losses = losses + excluded.losses,
+        best_score = MAX(best_score, excluded.best_score), total_score = total_score + excluded.total_score,
+        xp = xp + excluded.xp, updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now));
+    if (room.challenge_key) {
+      const yesterday = new Date(previousUtcDay(room.challenge_key)).toISOString().slice(0, 10);
+      statements.push(db.prepare(`INSERT OR IGNORE INTO daily_attempts (user_id, challenge_key, score, won, completed_at) VALUES (?, ?, ?, ?, ?)`)
+        .bind(player.user_id, room.challenge_key, player.score, won, now));
+      statements.push(db.prepare(`UPDATE player_stats SET
+        daily_streak = CASE WHEN last_daily_key = ? THEN daily_streak WHEN last_daily_key = ? THEN daily_streak + 1 ELSE 1 END,
+        last_daily_key = ?, updated_at = ? WHERE user_id = ?`).bind(room.challenge_key, yesterday, room.challenge_key, now, player.user_id));
+    }
+  }
+  if (statements.length) await db.batch(statements);
 }
 
 // Layered validation: pre-checks + seed list (instant) → word_cache (one D1
@@ -122,6 +153,18 @@ export async function GET(request: Request) {
       const rows = await db.prepare('SELECT player_name, wins, best_score FROM leaderboard_entries ORDER BY wins DESC, best_score DESC LIMIT 10').all();
       return json({ leaderboard: rows.results });
     }
+    if (url.searchParams.get('profile') === '1') {
+      const userId = stableUserId(url.searchParams.get('userId'));
+      const stats = await db.prepare('SELECT games_played, wins, losses, best_score, total_score, xp, daily_streak, last_daily_key FROM player_stats WHERE user_id = ?').bind(userId).first<PlayerStatsRow>();
+      const user = await db.prepare('SELECT display_name FROM users WHERE id = ?').bind(userId).first<{ display_name: string }>();
+      const xp = stats?.xp ?? 0;
+      return json({ name: user?.display_name ?? 'Player', stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, level: Math.floor(Math.sqrt(xp / 100)) + 1, dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
+    }
+    if (url.searchParams.get('daily') === '1') {
+      const userId = stableUserId(url.searchParams.get('userId')); const key = utcDay(now);
+      const attempt = await db.prepare('SELECT score, won, completed_at FROM daily_attempts WHERE user_id = ? AND challenge_key = ?').bind(userId, key).first();
+      return json({ key, category: dailyCategory(key), completed: Boolean(attempt), attempt: attempt ?? null });
+    }
     const code = (url.searchParams.get('code') ?? '').trim().toUpperCase();
     if (!code) return json({ error: 'Room code is required.' }, 400);
     const state = await roomState(db, code, now); return state ? json(state) : json({ error: 'Room not found.' }, 404);
@@ -136,6 +179,8 @@ export async function POST(request: Request) {
       const seats = (await db.prepare('SELECT id FROM players WHERE user_id = ?').bind(userId).all<{ id: string }>()).results;
       const statements: D1PreparedStatement[] = [
         db.prepare('DELETE FROM leaderboard_entries WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM player_stats WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM daily_attempts WHERE user_id = ?').bind(userId),
         db.prepare('DELETE FROM users WHERE id = ?').bind(userId),
       ];
       for (const seat of seats) {
@@ -144,6 +189,25 @@ export async function POST(request: Request) {
       }
       await db.batch(statements);
       return json({ deleted: true });
+    }
+    if (action === 'daily') {
+      const name = cleanName(body.name); const userId = stableUserId(body.userId); const challengeKey = utcDay(now);
+      const completed = await db.prepare('SELECT 1 FROM daily_attempts WHERE user_id = ? AND challenge_key = ?').bind(userId, challengeKey).first();
+      if (completed) return json({ error: 'You have already completed today’s Daily Clash.' }, 409);
+      const active = await db.prepare(`SELECT rooms.* FROM rooms JOIN players ON players.room_code = rooms.code
+        WHERE players.user_id = ? AND rooms.challenge_key = ? AND rooms.status IN ('waiting', 'active') LIMIT 1`).bind(userId, challengeKey).first<RoomRow>();
+      if (active) {
+        const seat = await db.prepare('SELECT id FROM players WHERE room_code = ? AND user_id = ?').bind(active.code, userId).first<{ id: string }>();
+        if (seat) return json({ code: active.code, playerId: seat.id, userId, state: await roomState(db, active.code, now), resumed: true });
+      }
+      const code = await createCode(db); const playerId = crypto.randomUUID(); const category = dailyCategory(challengeKey);
+      await upsertUser(db, userId, name, now);
+      await db.batch([
+        db.prepare(`INSERT INTO rooms (code, host_player_id, category, status, current_letter, turn_player_id, is_public, turn_deadline, challenge_key, created_at, updated_at) VALUES (?, ?, ?, 'active', 't', ?, 0, ?, ?, ?, ?)`).bind(code, playerId, category, playerId, now + turnMs, challengeKey, now, now),
+        db.prepare(`INSERT INTO players (id, user_id, room_code, name, is_bot, score, lives, joined_at, last_seen_at) VALUES (?, ?, ?, ?, 0, 0, 3, ?, ?)`).bind(playerId, userId, code, name, now, now),
+        botInsert(db, code, 0, now),
+      ]);
+      return json({ code, playerId, userId, state: await roomState(db, code, now), daily: { key: challengeKey, category } }, 201);
     }
     if (action === 'create' || action === 'quick' || action === 'matchmake') {
       const name = cleanName(body.name); const userId = stableUserId(body.userId); const category = String(body.category ?? 'animals') as Category;
