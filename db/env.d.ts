@@ -5,5 +5,6 @@ declare namespace Cloudflare {
     // and the verdict is cached in word_cache. Set with:
     //   wrangler secret put OPENAI_API_KEY
     OPENAI_API_KEY?: string;
+    GUEST_SESSION_SECRET?: string;
   }
 }
