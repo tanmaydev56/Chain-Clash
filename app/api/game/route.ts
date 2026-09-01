@@ -131,6 +131,20 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ''); const db = await getGameDb(); const now = Date.now();
+    if (action === 'delete_account') {
+      const userId = stableUserId(body.userId);
+      const seats = (await db.prepare('SELECT id FROM players WHERE user_id = ?').bind(userId).all<{ id: string }>()).results;
+      const statements: D1PreparedStatement[] = [
+        db.prepare('DELETE FROM leaderboard_entries WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM users WHERE id = ?').bind(userId),
+      ];
+      for (const seat of seats) {
+        statements.push(db.prepare('DELETE FROM moves WHERE player_id = ?').bind(seat.id));
+        statements.push(db.prepare('DELETE FROM players WHERE id = ?').bind(seat.id));
+      }
+      await db.batch(statements);
+      return json({ deleted: true });
+    }
     if (action === 'create' || action === 'quick' || action === 'matchmake') {
       const name = cleanName(body.name); const userId = stableUserId(body.userId); const category = String(body.category ?? 'animals') as Category;
       if (!(category in categories)) return json({ error: 'Invalid category.' }, 400);
