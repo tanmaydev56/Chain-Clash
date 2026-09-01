@@ -165,7 +165,11 @@ export async function POST(request: Request) {
       const name = cleanName(body.name); const userId = stableUserId(body.userId); const players = (await readPlayers(db, code)).results;
       const existing = players.find((player) => player.user_id === userId);
       if (existing) {
-        await db.prepare('UPDATE players SET last_seen_at = ? WHERE id = ?').bind(now, existing.id).run();
+        await db.batch([
+          db.prepare(`INSERT INTO users (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).bind(userId, name, now, now),
+          db.prepare('UPDATE players SET name = ?, last_seen_at = ? WHERE id = ?').bind(name, now, existing.id),
+        ]);
         return json({ code, playerId: existing.id, userId, state: await roomState(db, code, now), resumed: true });
       }
       if (action === 'resume') return json({ error: 'Your seat is no longer available.' }, 404);
