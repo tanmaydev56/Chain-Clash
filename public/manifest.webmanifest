@@ -1,0 +1,9 @@
+{
+  "name": "Chain Clash",
+  "short_name": "Chain Clash",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11151d",
+  "theme_color": "#d9ff64",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

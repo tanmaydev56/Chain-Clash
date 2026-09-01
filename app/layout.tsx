@@ -21,8 +21,10 @@ export const metadata: Metadata = {
     description: 'Battle friends and rivals in rapid-fire online word chains.',
     images: ['/og.png'],
   },
+  manifest: '/manifest.webmanifest',
+  themeColor: '#d9ff64',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body className={`${geist.variable} ${geistMono.variable}`}>{children}</body></html>;
+  return <html lang="en"><body className={`${geist.variable} ${geistMono.variable}`}>{children}<script dangerouslySetInnerHTML={{ __html: "if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));" }} /></body></html>;
 }
