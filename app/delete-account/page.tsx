@@ -10,7 +10,8 @@ export default function DeleteAccountPage() {
     setStatus('working');
     try {
       const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete_account', userId }) });
-      if (!response.ok) throw new Error();
+      const data = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(data?.error ?? 'Could not delete data.');
       window.localStorage.removeItem('chain-clash-user-id'); window.localStorage.removeItem('chain-clash-name'); window.localStorage.removeItem('chain-clash-room'); setStatus('done');
     } catch { setStatus('error'); }
   }
