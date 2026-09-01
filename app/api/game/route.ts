@@ -159,11 +159,22 @@ export async function POST(request: Request) {
       ];
       await db.batch(inserts); return json({ code, playerId, userId, state: await roomState(db, code, now) }, 201);
     }
-    if (action === 'join') {
+    if (action === 'join' || action === 'resume') {
       const code = String(body.code ?? '').trim().toUpperCase(); const room = await readRoom(db, code);
       if (!room) return json({ error: 'That room does not exist.' }, 404); if (room.status === 'finished') return json({ error: 'That match has finished.' }, 409);
-      const players = (await readPlayers(db, code)).results; if (players.length >= 6) return json({ error: 'That room is full.' }, 409);
-      const name = cleanName(body.name); const userId = stableUserId(body.userId); const playerId = crypto.randomUUID(); await upsertUser(db, userId, name, now);
+      const name = cleanName(body.name); const userId = stableUserId(body.userId); const players = (await readPlayers(db, code)).results;
+      const existing = players.find((player) => player.user_id === userId);
+      if (existing) {
+        await db.batch([
+          db.prepare(`INSERT INTO users (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).bind(userId, name, now, now),
+          db.prepare('UPDATE players SET name = ?, last_seen_at = ? WHERE id = ?').bind(name, now, existing.id),
+        ]);
+        return json({ code, playerId: existing.id, userId, state: await roomState(db, code, now), resumed: true });
+      }
+      if (action === 'resume') return json({ error: 'Your seat is no longer available.' }, 404);
+      if (players.length >= 6) return json({ error: 'That room is full.' }, 409);
+      const playerId = crypto.randomUUID(); await upsertUser(db, userId, name, now);
       await db.prepare(`INSERT INTO players (id, user_id, room_code, name, is_bot, score, lives, joined_at, last_seen_at) VALUES (?, ?, ?, ?, 0, 0, 3, ?, ?)`).bind(playerId, userId, code, name, now, now).run();
       if (room.status === 'waiting') await db.prepare(`UPDATE rooms SET status = 'active', turn_player_id = host_player_id, turn_deadline = ?, updated_at = ? WHERE code = ?`).bind(now + turnMs, now, code).run();
       return json({ code, playerId, userId, state: await roomState(db, code, now) });

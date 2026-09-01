@@ -42,6 +42,7 @@ export function GameClient() {
   const [practiceStatus, setPracticeStatus] = useState<'playing' | 'won' | 'lost'>('playing');
   const [feedback, setFeedback] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const resumeAllowedRef = useRef(true);
 
   const currentLetter = (chain.at(-1)?.at(-1) ?? 't').toLowerCase();
 
@@ -52,10 +53,22 @@ export function GameClient() {
     const nextUserId = storedUserId || crypto.randomUUID();
     window.localStorage.setItem('chain-clash-user-id', nextUserId);
     setUserId(nextUserId);
+    const savedRoom = window.localStorage.getItem('chain-clash-room');
+    if (savedRoom) fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'resume', code: savedRoom, name: storedName || 'Player', userId: nextUserId }) })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (!resumeAllowedRef.current) return;
+        if (data?.state) { resumeAllowedRef.current = false; setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setScreen('online'); }
+        else window.localStorage.removeItem('chain-clash-room');
+      })
+      .catch(() => undefined);
     fetch('/api/game?leaderboard=1').then((response) => response.json()).then((data) => setLeaderboard(data.leaderboard ?? [])).catch(() => undefined);
   }, []);
 
+  useEffect(() => { if (online?.code) window.localStorage.setItem('chain-clash-room', online.code); }, [online?.code]);
+
   const resetPractice = useCallback((nextCategory = category) => {
+    resumeAllowedRef.current = false;
     const starters: Record<Category, string> = { animals: 'tiger', food: 'taco', countries: 'india', things: 'table' };
     setCategory(nextCategory); setChain([starters[nextCategory]]); setPracticeScore(0); setBotScore(0); setPracticeLives(3); setBotLives(3); setTurn('you'); setTimeLeft(12); setPracticeStatus('playing'); setPracticeWord(''); setFeedback(''); setScreen('practice');
     setTimeout(() => inputRef.current?.focus(), 80);
@@ -126,6 +139,7 @@ export function GameClient() {
   }, [online, refreshRoom, screen]);
 
   async function roomAction(action: 'create' | 'join') {
+    resumeAllowedRef.current = false;
     setLoading(true); setNotice('');
     window.localStorage.setItem('chain-clash-name', name);
     try {
@@ -153,6 +167,7 @@ export function GameClient() {
 
   async function quickPlay() {
     if (!userId) return;
+    resumeAllowedRef.current = false;
     setLoading(true); setNotice(''); window.localStorage.setItem('chain-clash-name', name);
     try {
       const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'matchmake', name, userId, category }) });
@@ -176,7 +191,7 @@ export function GameClient() {
   }
 
   if (screen === 'practice') return <PracticeGame category={category} chain={chain} currentLetter={currentLetter} word={practiceWord} setWord={setPracticeWord} submit={submitPractice} score={practiceScore} botScore={botScore} lives={practiceLives} botLives={botLives} turn={turn} timeLeft={timeLeft} status={practiceStatus} feedback={feedback} inputRef={inputRef} back={() => setScreen('home')} replay={() => resetPractice(category)} />;
-  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} addBot={addBot} refresh={refreshRoom} leave={() => { setOnline(null); setScreen('home'); }} />;
+  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} addBot={addBot} refresh={refreshRoom} leave={() => { resumeAllowedRef.current = false; window.localStorage.removeItem('chain-clash-room'); setOnline(null); setScreen('home'); }} />;
 
   return (
     <main className="min-h-dvh overflow-hidden bg-background text-foreground">

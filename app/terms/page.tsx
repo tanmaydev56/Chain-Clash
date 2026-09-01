@@ -1,0 +1,2 @@
+import Link from 'next/link';
+export default function TermsPage() { return <main className="mx-auto min-h-dvh max-w-3xl px-6 py-16 text-foreground"><Link href="/" className="text-primary">← Chain Clash</Link><h1 className="mt-8 text-4xl font-black">Terms of Service</h1><p className="mt-6 text-muted-foreground">Play fairly, do not abuse the service, and do not submit hateful, unlawful, or disruptive content. We may remove abusive content or restrict access to protect players and the game.</p></main>; }
