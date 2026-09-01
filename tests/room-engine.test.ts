@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ROOM_POLICY, RoomCommandQueue, addBot, resolveAlarm, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from '../realtime-worker/src/room-engine.ts';
+import { ROOM_POLICY, RoomCommandQueue, addBot, resolveAlarm, resolveDisconnectGrace, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from '../realtime-worker/src/room-engine.ts';
 
 const now = 1_800_000_000_000;
 
@@ -74,7 +74,8 @@ void test('a bot turn progresses from an alarm', () => {
 void test('disconnect, reconnect, host migration, and abandoned cleanup follow policy', () => {
   const waiting = { ...room(), status: 'waiting' as const, deadline: null };
   const hostLeft = setConnected(waiting, 'user-a', false, now);
-  assert.equal(hostLeft.hostPlayerId, 'player-b');
+  assert.equal(resolveDisconnectGrace(hostLeft, now + ROOM_POLICY.reconnectGraceMs - 1).hostPlayerId, 'player-a');
+  assert.equal(resolveDisconnectGrace(hostLeft, now + ROOM_POLICY.reconnectGraceMs).hostPlayerId, 'player-b');
   assert.equal(setConnected(hostLeft, 'user-a', true, now + 1).players[0]?.disconnectedAt, null);
   const allLeft = setConnected(setConnected(room(), 'user-a', false, now), 'user-b', false, now);
   assert.equal(shouldExpireRoom(allLeft, now + ROOM_POLICY.abandonedActiveMs - 1), false);

@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { categories, normalizeWord, type Category } from '../../lib/game-data';
 import { verifyRealtimeTicket } from '../../lib/realtime-ticket';
 import { categoryValidationDefinition, d1WordCache, validateCategoryWord } from '../../lib/word-validation';
-import { ROOM_POLICY, RoomCommandQueue, addBot, publicRoomState, resolveAlarm, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from './room-engine';
+import { ROOM_POLICY, RoomCommandQueue, addBot, publicRoomState, resolveAlarm, resolveDisconnectGrace, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from './room-engine';
 
 export interface RealtimeEnv { DB: D1Database; ROOMS: DurableObjectNamespace<ChainClashRoom>; AI: Ai; REALTIME_TICKET_SECRET: string; APP_ORIGIN?: string }
 type Connection = { userId: string; playerId: string; sessionId: string };
@@ -98,7 +98,7 @@ export class ChainClashRoom extends DurableObject<RealtimeEnv> {
     const expiredTickets = [...ticketEntries].filter(([, expiresAt]) => expiresAt <= now).map(([key]) => key);
     if (expiredTickets.length) await this.ctx.storage.delete(expiredTickets);
     if (shouldExpireRoom(stored, now)) { for (const socket of this.ctx.getWebSockets()) socket.close(1001, 'Room expired'); await this.ctx.storage.deleteAll(); return; }
-    const next = resolveAlarm(stored, now); if (next !== stored) { this.snapshot = next; await this.save(true); this.broadcastState(); }
+    const afterDisconnects = resolveDisconnectGrace(stored, now); const next = resolveAlarm(afterDisconnects, now); if (next !== stored) { this.snapshot = next; await this.save(true); this.broadcastState(); }
     await this.schedule();
   }
 
@@ -157,7 +157,7 @@ export class ChainClashRoom extends DurableObject<RealtimeEnv> {
 
   private async workersAiJudge(category:Category,word:string,timeoutMs:number){const inference=this.env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast',{messages:[{role:'system',content:'Strict word-game classifier. Return exactly {"valid":true} or {"valid":false}. Reject uncertainty.'},{role:'user',content:`Is "${word}" ${categoryValidationDefinition(category)}?`} ]});const response=await Promise.race([inference,new Promise<null>((resolve)=>setTimeout(()=>resolve(null),timeoutMs))]);if(!response||typeof response!=='object')return null;const text='response' in response&&typeof response.response==='string'?response.response.trim():'';if(text==='{"valid":true}')return true;if(text==='{"valid":false}')return false;return null;}
   private async enqueue(operation:()=>Promise<void>){await this.commandQueue.run(operation);}
-  private async schedule(){const s=this.requireSnapshot();const now=Date.now();const noHumansConnected=s.players.filter((p)=>!p.bot).every((p)=>p.disconnectedAt!==null);const alarm=s.status==='finished'?s.updatedAt+ROOM_POLICY.finishedRetentionMs:s.deadline??(noHumansConnected?s.updatedAt+(s.status==='waiting'?ROOM_POLICY.emptyWaitingMs:ROOM_POLICY.abandonedActiveMs):now+ROOM_POLICY.emptyWaitingMs);await this.ctx.storage.setAlarm(Math.max(now+100,alarm));}
+  private async schedule(){const s=this.requireSnapshot();const now=Date.now();const humans=s.players.filter((p)=>!p.bot);const noHumansConnected=humans.every((p)=>p.disconnectedAt!==null);const host=s.players.find((p)=>p.id===s.hostPlayerId);const hostGrace=s.status==='waiting'&&host?.disconnectedAt&&humans.some((p)=>p.id!==host.id&&p.disconnectedAt===null)?host.disconnectedAt+ROOM_POLICY.reconnectGraceMs:null;const lifecycle=s.status==='finished'?s.updatedAt+ROOM_POLICY.finishedRetentionMs:noHumansConnected?s.updatedAt+(s.status==='waiting'?ROOM_POLICY.emptyWaitingMs:ROOM_POLICY.abandonedActiveMs):now+ROOM_POLICY.emptyWaitingMs;const alarm=Math.min(...[s.deadline,hostGrace,lifecycle].filter((value):value is number=>typeof value==='number'));await this.ctx.storage.setAlarm(Math.max(now+100,alarm));}
   private async restoreSnapshot(){if(this.snapshot)return;this.snapshot=await this.ctx.storage.get<RealtimeRoomState>('snapshot')??null;}
   private requireSnapshot(){if(!this.snapshot)throw new Error('Room state is unavailable.');return this.snapshot;}
   private reject(ws:WebSocket,error:string,commandId?:string){ws.send(JSON.stringify({type:'error',commandId,error}));}

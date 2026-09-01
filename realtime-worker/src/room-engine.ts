@@ -92,11 +92,16 @@ export function addBot(state: RealtimeRoomState, userId: string, commandId: stri
 export function setConnected(state: RealtimeRoomState, userId: string, connected: boolean, now: number) {
   const next = copy(state); const player = humanForUser(next, userId); if (!player) return state;
   player.disconnectedAt = connected ? null : now; next.updatedAt = now;
-  if (!connected && next.status === 'waiting' && player.id === next.hostPlayerId) {
-    const replacement = connectedHumans(next).find((candidate) => candidate.id !== player.id);
-    if (replacement) next.hostPlayerId = replacement.id;
-  }
   return next;
+}
+
+export function resolveDisconnectGrace(state: RealtimeRoomState, now: number) {
+  if (state.status !== 'waiting') return state;
+  const host = state.players.find((player) => player.id === state.hostPlayerId);
+  if (!host?.disconnectedAt || now < host.disconnectedAt + ROOM_POLICY.reconnectGraceMs) return state;
+  const replacement = connectedHumans(state).find((candidate) => candidate.id !== host.id);
+  if (!replacement) return state;
+  const next = copy(state); next.hostPlayerId = replacement.id; next.version += 1; next.updatedAt = now; return next;
 }
 
 export function shouldExpireRoom(state: RealtimeRoomState, now: number) {
