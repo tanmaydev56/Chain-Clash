@@ -52,8 +52,15 @@ export function GameClient() {
     const nextUserId = storedUserId || crypto.randomUUID();
     window.localStorage.setItem('chain-clash-user-id', nextUserId);
     setUserId(nextUserId);
+    const savedRoom = window.localStorage.getItem('chain-clash-room');
+    if (savedRoom) fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'resume', code: savedRoom, name: storedName || 'Player', userId: nextUserId }) })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (data?.state) { setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setScreen('online'); } else window.localStorage.removeItem('chain-clash-room'); })
+      .catch(() => undefined);
     fetch('/api/game?leaderboard=1').then((response) => response.json()).then((data) => setLeaderboard(data.leaderboard ?? [])).catch(() => undefined);
   }, []);
+
+  useEffect(() => { if (online) window.localStorage.setItem('chain-clash-room', online.code); }, [online]);
 
   const resetPractice = useCallback((nextCategory = category) => {
     const starters: Record<Category, string> = { animals: 'tiger', food: 'taco', countries: 'india', things: 'table' };
@@ -176,7 +183,7 @@ export function GameClient() {
   }
 
   if (screen === 'practice') return <PracticeGame category={category} chain={chain} currentLetter={currentLetter} word={practiceWord} setWord={setPracticeWord} submit={submitPractice} score={practiceScore} botScore={botScore} lives={practiceLives} botLives={botLives} turn={turn} timeLeft={timeLeft} status={practiceStatus} feedback={feedback} inputRef={inputRef} back={() => setScreen('home')} replay={() => resetPractice(category)} />;
-  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} addBot={addBot} refresh={refreshRoom} leave={() => { setOnline(null); setScreen('home'); }} />;
+  if (screen === 'online' && online) return <OnlineGame session={online} name={name} notice={notice} loading={loading} submit={submitOnline} addBot={addBot} refresh={refreshRoom} leave={() => { window.localStorage.removeItem('chain-clash-room'); setOnline(null); setScreen('home'); }} />;
 
   return (
     <main className="min-h-dvh overflow-hidden bg-background text-foreground">
