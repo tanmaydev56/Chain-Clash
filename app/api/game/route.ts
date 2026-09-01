@@ -3,7 +3,8 @@ import { getGameDb } from '@/lib/game-db';
 import { categories, getWords, normalizeWord, type Category } from '@/lib/game-data';
 import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 import { clearGuestSession, issueGuestSession, requireGuest } from '@/lib/game-session';
-import { claimRoomFinalization, claimRoomTurn, isHostActionAuthorized } from '@/lib/game-state';
+import { claimRoomTurn, isHostActionAuthorized } from '@/lib/game-state';
+import { createRealtimeTicket } from '@/lib/realtime-ticket';
 
 type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; state_version: number; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
@@ -56,36 +57,39 @@ async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], curr
 }
 
 async function recordFinishedRoom(db: D1Database, room: RoomRow, players: PlayerRow[], winner: PlayerRow | null, now: number) {
-  if (!await claimRoomFinalization(db, room.code)) return;
+  const statements: D1PreparedStatement[] = [];
   if (winner?.user_id) {
-    await db.batch([
-      db.prepare(`INSERT INTO leaderboard_entries (user_id, player_name, wins, best_score, updated_at) VALUES (?, ?, 1, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, winner.name, winner.score, now),
-      db.prepare(`INSERT INTO weekly_leaderboard (user_id, week_key, player_name, wins, best_score, updated_at) VALUES (?, ?, ?, 1, ?, ?)
-        ON CONFLICT(user_id, week_key) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, weekKey(now), winner.name, winner.score, now),
-    ]);
+    statements.push(
+      db.prepare(`INSERT INTO leaderboard_entries (user_id, player_name, wins, best_score, updated_at)
+        SELECT ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM rooms WHERE code = ? AND stats_recorded = 0)
+        ON CONFLICT(user_id) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, winner.name, winner.score, now, room.code),
+      db.prepare(`INSERT INTO weekly_leaderboard (user_id, week_key, player_name, wins, best_score, updated_at)
+        SELECT ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM rooms WHERE code = ? AND stats_recorded = 0)
+        ON CONFLICT(user_id, week_key) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, weekKey(now), winner.name, winner.score, now, room.code),
+    );
   }
   const humans = players.filter((player) => player.user_id && !player.is_bot);
-  const statements: D1PreparedStatement[] = [];
   for (const player of humans) {
     const won = player.id === winner?.id ? 1 : 0;
     const earnedXp = player.score + (won ? 100 : 25);
     statements.push(db.prepare(`INSERT INTO player_stats (user_id, games_played, wins, losses, best_score, total_score, xp, updated_at)
-      VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+      SELECT ?, 1, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM rooms WHERE code = ? AND stats_recorded = 0)
       ON CONFLICT(user_id) DO UPDATE SET
         games_played = games_played + 1, wins = wins + excluded.wins, losses = losses + excluded.losses,
         best_score = MAX(best_score, excluded.best_score), total_score = total_score + excluded.total_score,
-        xp = xp + excluded.xp, mmr = MAX(100, mmr + ?), updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now, won ? 25 : -20));
+        xp = xp + excluded.xp, mmr = MAX(100, mmr + ?), updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now, room.code, won ? 25 : -20));
     if (room.challenge_key) {
       const yesterday = new Date(previousUtcDay(room.challenge_key)).toISOString().slice(0, 10);
-      statements.push(db.prepare(`INSERT OR IGNORE INTO daily_attempts (user_id, challenge_key, score, won, completed_at) VALUES (?, ?, ?, ?, ?)`)
-        .bind(player.user_id, room.challenge_key, player.score, won, now));
+      statements.push(db.prepare(`INSERT OR IGNORE INTO daily_attempts (user_id, challenge_key, score, won, completed_at)
+        SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM rooms WHERE code = ? AND stats_recorded = 0)`)
+        .bind(player.user_id, room.challenge_key, player.score, won, now, room.code));
       statements.push(db.prepare(`UPDATE player_stats SET
         daily_streak = CASE WHEN last_daily_key = ? THEN daily_streak WHEN last_daily_key = ? THEN daily_streak + 1 ELSE 1 END,
-        last_daily_key = ?, updated_at = ? WHERE user_id = ?`).bind(room.challenge_key, yesterday, room.challenge_key, now, player.user_id));
+        last_daily_key = ?, updated_at = ? WHERE user_id = ? AND EXISTS (SELECT 1 FROM rooms WHERE code = ? AND stats_recorded = 0)`).bind(room.challenge_key, yesterday, room.challenge_key, now, player.user_id, room.code));
     }
   }
-  if (statements.length) await db.batch(statements);
+  statements.push(db.prepare('UPDATE rooms SET stats_recorded = 1 WHERE code = ? AND stats_recorded = 0').bind(room.code));
+  await db.batch(statements);
 }
 
 // Layered validation: pre-checks + seed list (instant) → word_cache (one D1
@@ -189,10 +193,23 @@ export async function POST(request: Request) {
       try { const existing = await requireGuest(db, request, now); return json({ name: existing.name }); }
       catch { const name = cleanName(body.name); const session = await issueGuestSession(db, request, name, now); return new Response(JSON.stringify({ name }), { status: 201, headers: { 'Content-Type': 'application/json', 'Set-Cookie': session.cookie } }); }
     }
-    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], report: [5, 3_600_000] };
+    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], realtime_ticket: [30, 60_000], report: [5, 3_600_000] };
     const limit = limits[action];
     if (limit && !allowRequest(request, action, now, limit[0], limit[1])) return json({ error: 'Too many requests. Please wait a moment.' }, 429);
     const actor = await requireGuest(db, request, now);
+    if (action === 'realtime_ticket') {
+      const code = stringValue(body.code).trim().toUpperCase();
+      const origin = (env as { REALTIME_ORIGIN?: string }).REALTIME_ORIGIN;
+      const secret = (env as { REALTIME_TICKET_SECRET?: string }).REALTIME_TICKET_SECRET;
+      if (!origin || !secret || secret.length < 32) return json({ error: 'Realtime is not configured yet. The polling connection is still active.' }, 503);
+      let realtimeOrigin: URL;
+      try { realtimeOrigin = new URL(origin); } catch { return json({ error: 'Realtime configuration is invalid. The polling connection is still active.' }, 503); }
+      if (!['https:', 'http:'].includes(realtimeOrigin.protocol) || realtimeOrigin.username || realtimeOrigin.password || realtimeOrigin.search || realtimeOrigin.hash) return json({ error: 'Realtime configuration is invalid. The polling connection is still active.' }, 503);
+      const seat = await db.prepare('SELECT id FROM players WHERE room_code = ? AND user_id = ?').bind(code, actor.userId).first<{ id: string }>();
+      if (!seat) return json({ error: 'Only room participants can connect to realtime.' }, 403);
+      const ticket = await createRealtimeTicket({ roomCode: code, userId: actor.userId, sessionId: actor.sessionId, playerId: seat.id, nonce: crypto.randomUUID(), expiresAt: now + 60_000 }, secret);
+      return json({ url: `${realtimeOrigin.origin}/rooms/${encodeURIComponent(code)}?ticket=${encodeURIComponent(ticket)}`, expiresAt: now + 60_000 });
+    }
     if (action === 'delete_account') {
       const userId = actor.userId;
       const statements: D1PreparedStatement[] = [

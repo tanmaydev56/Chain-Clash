@@ -6,5 +6,7 @@ declare namespace Cloudflare {
     //   wrangler secret put OPENAI_API_KEY
     OPENAI_API_KEY?: string;
     GUEST_SESSION_SECRET?: string;
+    REALTIME_TICKET_SECRET?: string;
+    REALTIME_ORIGIN?: string;
   }
 }
