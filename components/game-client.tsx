@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Flame, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Flame, Gamepad2, Globe2, Heart, LoaderCircle, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { categories, getWords, isValidCategoryWord, normalizeWord, type Category } from '@/lib/game-data';
@@ -13,6 +13,15 @@ type OnlineSession = { code: string; playerId: string; state: RoomState };
 
 const playerColors = ['#d9ff64', '#ff8b72', '#70d7ff', '#c9a7ff', '#ffd05c', '#74f1b6'];
 const categoryLabels: Record<Category, string> = { animals: 'Animals', food: 'Food', countries: 'Countries', things: 'Everyday things' };
+
+function playTone(enabled: boolean, frequency: number, duration = 0.08) {
+  if (!enabled || typeof window === 'undefined') return;
+  const Audio = window.AudioContext ?? window.webkitAudioContext;
+  if (!Audio) return;
+  const context = new Audio(); const oscillator = context.createOscillator(); const gain = context.createGain();
+  oscillator.frequency.value = frequency; gain.gain.setValueAtTime(0.055, context.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration);
+  oscillator.connect(gain); gain.connect(context.destination); oscillator.start(); oscillator.stop(context.currentTime + duration); oscillator.addEventListener('ended', () => void context.close());
+}
 
 function Hearts({ lives }: { lives: number }) {
   return <span className="flex gap-0.5" aria-label={`${lives} lives remaining`}>{[0, 1, 2].map((index) => <Heart key={index} className={`size-3.5 ${index < lives ? 'fill-secondary text-secondary' : 'text-white/15'}`} />)}</span>;
@@ -32,6 +41,7 @@ export function GameClient() {
   const [leaderboard, setLeaderboard] = useState<Array<{ player_name: string; wins: number; best_score: number }>>([]);
   const [profile, setProfile] = useState<{ stats: { gamesPlayed: number; wins: number; bestScore: number; xp: number; level: number; dailyStreak: number } } | null>(null);
   const [daily, setDaily] = useState<{ key: string; category: Category; completed: boolean } | null>(null);
+  const [soundOn, setSoundOn] = useState(true);
 
   const [chain, setChain] = useState<string[]>(['tiger']);
   const [practiceWord, setPracticeWord] = useState('');
@@ -50,6 +60,7 @@ export function GameClient() {
 
   useEffect(() => {
     const storedName = window.localStorage.getItem('chain-clash-name');
+    setSoundOn(window.localStorage.getItem('chain-clash-sound') !== 'off');
     if (storedName) setName(storedName);
     const storedUserId = window.localStorage.getItem('chain-clash-user-id');
     const nextUserId = storedUserId || crypto.randomUUID();
@@ -79,6 +90,7 @@ export function GameClient() {
   }, [category]);
 
   const losePracticeLife = useCallback((message: string) => {
+    playTone(soundOn, 145, 0.18); if (navigator.vibrate) navigator.vibrate(90);
     setFeedback(message);
     setPracticeLives((lives) => {
       const next = lives - 1;
@@ -86,7 +98,7 @@ export function GameClient() {
       return Math.max(0, next);
     });
     setTimeLeft(12);
-  }, []);
+  }, [soundOn]);
 
   const botMove = useCallback((nextLetter: string, usedChain: string[]) => {
     setTimeout(() => {
@@ -114,9 +126,9 @@ export function GameClient() {
     if (chain.includes(word)) return losePracticeLife('That word was already used');
     if (!isValidCategoryWord(category, practiceWord)) return losePracticeLife(`“${practiceWord || 'That'}” is not in the ${categoryLabels[category].toLowerCase()} dictionary`);
     const nextChain = [...chain, word];
-    setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
+    playTone(soundOn, 660); if (navigator.vibrate) navigator.vibrate(18); setChain(nextChain); setPracticeScore((score) => score + word.length * 10 + Math.ceil(timeLeft) * 2); setPracticeWord(''); setFeedback(`Nice! +${word.length * 10 + Math.ceil(timeLeft) * 2}`); setTurn('bot');
     botMove(word.at(-1) ?? 'a', nextChain);
-  }, [botMove, category, chain, currentLetter, losePracticeLife, practiceStatus, practiceWord, timeLeft, turn]);
+  }, [botMove, category, chain, currentLetter, losePracticeLife, practiceStatus, practiceWord, soundOn, timeLeft, turn]);
 
   useEffect(() => {
     if (screen !== 'practice' || practiceStatus !== 'playing' || turn !== 'you') return;
@@ -164,6 +176,7 @@ export function GameClient() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Move rejected.');
       setOnline({ ...online, state: data.state });
+      playTone(soundOn, data.valid ? 660 : 145, data.valid ? 0.08 : 0.18); if (navigator.vibrate) navigator.vibrate(data.valid ? 18 : 90);
       setNotice(data.valid ? 'Great chain!' : 'Invalid word — one life lost.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Move rejected.'); }
     finally { setLoading(false); }
@@ -215,7 +228,7 @@ export function GameClient() {
       <div className="noise" />
       <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
         <div className="flex items-center gap-3"><Logo /><span className="text-lg font-black uppercase tracking-[-0.04em]">Chain Clash</span></div>
-        <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span>
+        <div className="flex items-center gap-2"><span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span><Button aria-label={soundOn ? 'Mute game sounds' : 'Enable game sounds'} onClick={() => { const next = !soundOn; setSoundOn(next); window.localStorage.setItem('chain-clash-sound', next ? 'on' : 'off'); if (next) playTone(true, 520); }} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground">{soundOn ? <Volume2 /> : <VolumeX />}</Button></div>
       </header>
       <section className="relative z-10 mx-auto grid w-full max-w-7xl gap-10 px-5 pb-12 pt-7 lg:grid-cols-[0.82fr_1.18fr] lg:items-center lg:px-8 lg:pt-12">
         <div className="max-w-xl">
