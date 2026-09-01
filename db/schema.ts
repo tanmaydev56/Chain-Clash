@@ -74,3 +74,12 @@ export const dailyAttempts = sqliteTable('daily_attempts', {
   won: integer('won', { mode: 'boolean' }).notNull(),
   completedAt: integer('completed_at').notNull(),
 }, (table) => [uniqueIndex('uq_daily_attempt_user_challenge').on(table.userId, table.challengeKey)]);
+
+export const reports = sqliteTable('reports', {
+  id: text('id').primaryKey(),
+  roomCode: text('room_code').notNull(),
+  reporterUserId: text('reporter_user_id').notNull(),
+  reportedPlayerId: text('reported_player_id'),
+  reason: text('reason').notNull(),
+  createdAt: integer('created_at').notNull(),
+}, (table) => [index('idx_reports_room_created').on(table.roomCode, table.createdAt)]);

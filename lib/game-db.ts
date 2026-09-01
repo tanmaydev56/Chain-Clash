@@ -88,8 +88,17 @@ export async function getGameDb() {
         completed_at INTEGER NOT NULL,
         PRIMARY KEY (user_id, challenge_key)
       )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS reports (
+        id TEXT PRIMARY KEY,
+        room_code TEXT NOT NULL,
+        reporter_user_id TEXT NOT NULL,
+        reported_player_id TEXT,
+        reason TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_players_room_code ON players(room_code)'),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_moves_room_created ON moves(room_code, created_at)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS idx_reports_room_created ON reports(room_code, created_at)'),
     ]);
     await Promise.all([
       db.prepare('ALTER TABLE rooms ADD COLUMN turn_deadline INTEGER').run().catch(() => undefined),

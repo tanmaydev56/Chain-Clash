@@ -160,7 +160,7 @@ export function GameClient() {
     if (!online) return;
     setLoading(true); setNotice('');
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', code: online.code, playerId: online.playerId, word }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', code: online.code, playerId: online.playerId, userId, word }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Move rejected.');
       setOnline({ ...online, state: data.state });
@@ -199,7 +199,7 @@ export function GameClient() {
     if (!online) return;
     setLoading(true); setNotice('');
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code, playerId: online.playerId }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code, playerId: online.playerId, userId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Could not add a bot.');
       setOnline({ ...online, state: data.state });
