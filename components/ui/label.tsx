@@ -3,6 +3,8 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+// This primitive forwards htmlFor to its consumer, which supplies the control association.
+// oxlint-disable jsx-a11y/label-has-associated-control
 
 function Label({ className, ...props }: React.ComponentProps<'label'>) {
   return (

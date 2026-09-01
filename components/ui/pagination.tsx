@@ -7,6 +7,8 @@ import {
   ChevronRightIcon,
   MoreHorizontalIcon,
 } from 'lucide-react';
+// The anchor receives accessible content when this render prop is composed by Button.
+// oxlint-disable jsx-a11y/anchor-has-content
 
 function Pagination({ className, ...props }: React.ComponentProps<'nav'>) {
   return (

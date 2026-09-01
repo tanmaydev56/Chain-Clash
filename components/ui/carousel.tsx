@@ -1,6 +1,8 @@
 'use client';
 
 import * as React from 'react';
+// Carousel state is synchronized with the external Embla instance; generic group roles are intentional.
+// oxlint-disable react/react-compiler, jsx-a11y/prefer-tag-over-role
 import useEmblaCarousel, {
   type UseEmblaCarouselType,
 } from 'embla-carousel-react';

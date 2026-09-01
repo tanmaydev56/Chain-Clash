@@ -3,6 +3,8 @@ import { useRender } from '@base-ui/react/use-render';
 import { cva, type VariantProps } from 'class-variance-authority';
 
 import { cn } from '@/lib/utils';
+// This component supports arbitrary children, so a fieldset is not valid markup.
+// oxlint-disable jsx-a11y/prefer-tag-over-role
 import { Separator } from '@/components/ui/separator';
 
 const buttonGroupVariants = cva(

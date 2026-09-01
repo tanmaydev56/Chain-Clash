@@ -4,6 +4,8 @@ import { useMemo } from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 
 import { cn } from '@/lib/utils';
+// Field groups can contain controls that are invalid inside a fieldset.
+// oxlint-disable jsx-a11y/prefer-tag-over-role
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 
