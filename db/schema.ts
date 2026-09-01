@@ -8,6 +8,7 @@ export const rooms = sqliteTable('rooms', {
   currentLetter: text('current_letter').notNull().default('t'),
   turnPlayerId: text('turn_player_id'),
   winnerPlayerId: text('winner_player_id'),
+  isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
   turnDeadline: integer('turn_deadline'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),

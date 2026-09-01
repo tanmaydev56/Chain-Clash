@@ -15,6 +15,7 @@ export async function getGameDb() {
         current_letter TEXT NOT NULL DEFAULT 't',
         turn_player_id TEXT,
         winner_player_id TEXT,
+        is_public INTEGER NOT NULL DEFAULT 0,
         turn_deadline INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -70,6 +71,7 @@ export async function getGameDb() {
     ]);
     await Promise.all([
       db.prepare('ALTER TABLE rooms ADD COLUMN turn_deadline INTEGER').run().catch(() => undefined),
+      db.prepare('ALTER TABLE rooms ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0').run().catch(() => undefined),
       db.prepare('ALTER TABLE players ADD COLUMN user_id TEXT').run().catch(() => undefined),
       db.prepare('ALTER TABLE players ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0').run().catch(() => undefined),
     ]);

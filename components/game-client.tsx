@@ -155,7 +155,7 @@ export function GameClient() {
     if (!userId) return;
     setLoading(true); setNotice(''); window.localStorage.setItem('chain-clash-name', name);
     try {
-      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'quick', name, userId, category }) });
+      const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'matchmake', name, userId, category }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Could not start a match.');
       setOnline({ code: data.code, playerId: data.playerId, state: data.state }); setScreen('online');

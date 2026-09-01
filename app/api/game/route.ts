@@ -3,7 +3,7 @@ import { getGameDb } from '@/lib/game-db';
 import { categories, getWords, normalizeWord, type Category } from '@/lib/game-data';
 import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 
-type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null; created_at: number; updated_at: number };
+type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const turnMs = 12_000;
@@ -131,13 +131,29 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ''); const db = await getGameDb(); const now = Date.now();
-    if (action === 'create' || action === 'quick') {
+    if (action === 'create' || action === 'quick' || action === 'matchmake') {
       const name = cleanName(body.name); const userId = stableUserId(body.userId); const category = String(body.category ?? 'animals') as Category;
       if (!(category in categories)) return json({ error: 'Invalid category.' }, 400);
-      const code = await createCode(db); const playerId = crypto.randomUUID(); const botCount = action === 'quick' ? 1 : Math.max(0, Math.min(3, Number(body.botCount ?? 0)));
+      if (action === 'matchmake') {
+        const candidates = (await db.prepare(`SELECT * FROM rooms WHERE is_public = 1 AND status = 'active' ORDER BY updated_at DESC LIMIT 12`).all<RoomRow>()).results;
+        for (const room of candidates) {
+          const players = (await readPlayers(db, room.code)).results;
+          const bot = players.find((player) => player.is_bot);
+          if (!bot || players.length >= 6) continue;
+          const playerId = crypto.randomUUID();
+          await upsertUser(db, userId, name, now);
+          await db.batch([
+            db.prepare('DELETE FROM players WHERE id = ?').bind(bot.id),
+            db.prepare(`INSERT INTO players (id, user_id, room_code, name, is_bot, score, lives, joined_at, last_seen_at) VALUES (?, ?, ?, ?, 0, 0, 3, ?, ?)`).bind(playerId, userId, room.code, name, now, now),
+            db.prepare('UPDATE rooms SET updated_at = ? WHERE code = ?').bind(now, room.code),
+          ]);
+          return json({ code: room.code, playerId, userId, state: await roomState(db, room.code, now), matched: true });
+        }
+      }
+      const code = await createCode(db); const playerId = crypto.randomUUID(); const botCount = action === 'matchmake' || action === 'quick' ? 1 : Math.max(0, Math.min(3, Number(body.botCount ?? 0)));
       await upsertUser(db, userId, name, now);
       const inserts = [
-        db.prepare(`INSERT INTO rooms (code, host_player_id, category, status, current_letter, turn_player_id, turn_deadline, created_at, updated_at) VALUES (?, ?, ?, ?, 't', ?, ?, ?, ?)`).bind(code, playerId, category, botCount ? 'active' : 'waiting', playerId, botCount ? now + turnMs : null, now, now),
+        db.prepare(`INSERT INTO rooms (code, host_player_id, category, status, current_letter, turn_player_id, is_public, turn_deadline, created_at, updated_at) VALUES (?, ?, ?, ?, 't', ?, ?, ?, ?, ?)`).bind(code, playerId, category, botCount ? 'active' : 'waiting', playerId, action === 'matchmake' ? 1 : 0, botCount ? now + turnMs : null, now, now),
         db.prepare(`INSERT INTO players (id, user_id, room_code, name, is_bot, score, lives, joined_at, last_seen_at) VALUES (?, ?, ?, ?, 0, 0, 3, ?, ?)`).bind(playerId, userId, code, name, now, now),
         ...Array.from({ length: botCount }, (_, index) => botInsert(db, code, index, now)),
       ];
