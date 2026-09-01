@@ -5,7 +5,7 @@ import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 
 type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
-type PlayerStatsRow = { games_played: number; wins: number; losses: number; best_score: number; total_score: number; xp: number; daily_streak: number; last_daily_key: string | null };
+type PlayerStatsRow = { games_played: number; wins: number; losses: number; best_score: number; total_score: number; xp: number; mmr: number; daily_streak: number; last_daily_key: string | null };
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const turnMs = 12_000;
 const botNames = ['WordBot', 'Lime Lynx', 'Coral Crow', 'Turbo Tapir', 'Neon Narwhal'];
@@ -17,6 +17,7 @@ function stableUserId(value: unknown) { const id = String(value ?? ''); return /
 function utcDay(now: number) { return new Date(now).toISOString().slice(0, 10); }
 function previousUtcDay(day: string) { return new Date(`${day}T00:00:00.000Z`).getTime() - 86_400_000; }
 function dailyCategory(day: string): Category { return (Object.keys(categories) as Category[])[Number(day.replaceAll('-', '')) % Object.keys(categories).length]; }
+function weekKey(now: number) { const date = new Date(now); const day = date.getUTCDay() || 7; date.setUTCDate(date.getUTCDate() - day + 1); return date.toISOString().slice(0, 10); }
 function requestIp(request: Request) { return request.headers.get('CF-Connecting-IP') ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'; }
 function allowRequest(request: Request, action: string, now: number, limit: number, windowMs: number) {
   const key = `${action}:${requestIp(request)}`; const current = rateBuckets.get(key);
@@ -57,6 +58,8 @@ async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], curr
   if (winner?.user_id) {
     await db.prepare(`INSERT INTO leaderboard_entries (user_id, player_name, wins, best_score, updated_at) VALUES (?, ?, 1, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, winner.name, winner.score, now).run();
+    await db.prepare(`INSERT INTO weekly_leaderboard (user_id, week_key, player_name, wins, best_score, updated_at) VALUES (?, ?, ?, 1, ?, ?)
+      ON CONFLICT(user_id, week_key) DO UPDATE SET player_name = excluded.player_name, wins = wins + 1, best_score = MAX(best_score, excluded.best_score), updated_at = excluded.updated_at`).bind(winner.user_id, weekKey(now), winner.name, winner.score, now).run();
   }
   if (finished) await recordFinishedRoom(db, room, players, winner, now);
 }
@@ -74,7 +77,7 @@ async function recordFinishedRoom(db: D1Database, room: RoomRow, players: Player
       ON CONFLICT(user_id) DO UPDATE SET
         games_played = games_played + 1, wins = wins + excluded.wins, losses = losses + excluded.losses,
         best_score = MAX(best_score, excluded.best_score), total_score = total_score + excluded.total_score,
-        xp = xp + excluded.xp, updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now));
+        xp = xp + excluded.xp, mmr = MAX(100, mmr + ?), updated_at = excluded.updated_at`).bind(player.user_id, won, won ? 0 : 1, player.score, player.score, earnedXp, now, won ? 25 : -20));
     if (room.challenge_key) {
       const yesterday = new Date(previousUtcDay(room.challenge_key)).toISOString().slice(0, 10);
       statements.push(db.prepare(`INSERT OR IGNORE INTO daily_attempts (user_id, challenge_key, score, won, completed_at) VALUES (?, ?, ?, ?, ?)`)
@@ -158,15 +161,15 @@ export async function GET(request: Request) {
   try {
     const db = await getGameDb(); const url = new URL(request.url); const now = Date.now();
     if (url.searchParams.get('leaderboard') === '1') {
-      const rows = await db.prepare('SELECT player_name, wins, best_score FROM leaderboard_entries ORDER BY wins DESC, best_score DESC LIMIT 10').all();
+      const rows = await db.prepare('SELECT player_name, wins, best_score FROM weekly_leaderboard WHERE week_key = ? ORDER BY wins DESC, best_score DESC LIMIT 10').bind(weekKey(now)).all();
       return json({ leaderboard: rows.results });
     }
     if (url.searchParams.get('profile') === '1') {
       const userId = stableUserId(url.searchParams.get('userId'));
-      const stats = await db.prepare('SELECT games_played, wins, losses, best_score, total_score, xp, daily_streak, last_daily_key FROM player_stats WHERE user_id = ?').bind(userId).first<PlayerStatsRow>();
+      const stats = await db.prepare('SELECT games_played, wins, losses, best_score, total_score, xp, mmr, daily_streak, last_daily_key FROM player_stats WHERE user_id = ?').bind(userId).first<PlayerStatsRow>();
       const user = await db.prepare('SELECT display_name FROM users WHERE id = ?').bind(userId).first<{ display_name: string }>();
       const xp = stats?.xp ?? 0;
-      return json({ name: user?.display_name ?? 'Player', stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, level: Math.floor(Math.sqrt(xp / 100)) + 1, dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
+      return json({ name: user?.display_name ?? 'Player', stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, mmr: stats?.mmr ?? 1000, level: Math.floor(Math.sqrt(xp / 100)) + 1, dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
     }
     if (url.searchParams.get('daily') === '1') {
       const userId = stableUserId(url.searchParams.get('userId')); const key = utcDay(now);

@@ -40,7 +40,7 @@ export function GameClient() {
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState<OnlineSession | null>(null);
   const [leaderboard, setLeaderboard] = useState<Array<{ player_name: string; wins: number; best_score: number }>>([]);
-  const [profile, setProfile] = useState<{ stats: { gamesPlayed: number; wins: number; bestScore: number; xp: number; level: number; dailyStreak: number } } | null>(null);
+  const [profile, setProfile] = useState<{ stats: { gamesPlayed: number; wins: number; bestScore: number; xp: number; mmr: number; level: number; dailyStreak: number } } | null>(null);
   const [daily, setDaily] = useState<{ key: string; category: Category; completed: boolean } | null>(null);
   const [soundOn, setSoundOn] = useState(true);
 
@@ -250,7 +250,7 @@ export function GameClient() {
         {[['01', 'Pick a category', 'Animals, food, countries and everyday things.'], ['02', 'Chain the word', 'Your answer starts with the last letter played.'], ['03', 'Outlast rivals', 'Three lives. Twelve seconds. No repeats.']].map(([number, title, copy]) => <div key={number} className="rounded-2xl border border-white/8 bg-white/[0.025] p-5"><span className="font-mono text-xs font-black text-primary">{number}</span><h2 className="mt-4 text-lg font-black uppercase">{title}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{copy}</p></div>)}
       </section>
 
-      {profile && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-6 sm:px-8"><div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/8 bg-white/[0.025] p-4 sm:grid-cols-5"><Stat label="Level" value={profile.stats.level} /><Stat label="XP" value={profile.stats.xp} /><Stat label="Wins" value={`${profile.stats.wins}/${profile.stats.gamesPlayed}`} /><Stat label="Best" value={profile.stats.bestScore} /><Stat label="Streak" value={`${profile.stats.dailyStreak}d`} /></div></section>}
+      {profile && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-6 sm:px-8"><div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/8 bg-white/[0.025] p-4 sm:grid-cols-6"><Stat label="Level" value={profile.stats.level} /><Stat label="XP" value={profile.stats.xp} /><Stat label="Rank" value={profile.stats.mmr} /><Stat label="Wins" value={`${profile.stats.wins}/${profile.stats.gamesPlayed}`} /><Stat label="Best" value={profile.stats.bestScore} /><Stat label="Streak" value={`${profile.stats.dailyStreak}d`} /></div></section>}
 
       {leaderboard.length > 0 && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-16 sm:px-8"><div className="rounded-2xl border border-white/8 bg-white/[0.025] p-5"><div className="flex items-center gap-2"><Trophy className="size-5 text-primary" /><h2 className="font-black uppercase">Weekly champions</h2></div><div className="mt-4 grid gap-2 sm:grid-cols-3">{leaderboard.slice(0, 3).map((row, index) => <div key={row.player_name} className="flex items-center gap-3 rounded-xl bg-black/20 p-3"><span className="grid size-8 place-items-center rounded-lg bg-primary/10 font-mono text-xs font-black text-primary">#{index + 1}</span><span className="font-bold">{row.player_name}</span><span className="ml-auto text-xs text-muted-foreground">{row.wins} wins</span></div>)}</div></div></section>}
 

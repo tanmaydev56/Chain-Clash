@@ -62,10 +62,20 @@ export const playerStats = sqliteTable('player_stats', {
   bestScore: integer('best_score').notNull().default(0),
   totalScore: integer('total_score').notNull().default(0),
   xp: integer('xp').notNull().default(0),
+  mmr: integer('mmr').notNull().default(1000),
   dailyStreak: integer('daily_streak').notNull().default(0),
   lastDailyKey: text('last_daily_key'),
   updatedAt: integer('updated_at').notNull(),
 });
+
+export const weeklyLeaderboard = sqliteTable('weekly_leaderboard', {
+  userId: text('user_id').notNull(),
+  weekKey: text('week_key').notNull(),
+  playerName: text('player_name').notNull(),
+  wins: integer('wins').notNull().default(0),
+  bestScore: integer('best_score').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+}, (table) => [uniqueIndex('uq_weekly_leaderboard_user_week').on(table.userId, table.weekKey), index('idx_weekly_leaderboard_week').on(table.weekKey, table.wins, table.bestScore)]);
 
 export const dailyAttempts = sqliteTable('daily_attempts', {
   userId: text('user_id').notNull(),

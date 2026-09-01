@@ -29,6 +29,13 @@
       "when": 1788241571769,
       "tag": "0003_fixed_mach_iv",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788241749406,
+      "tag": "0004_new_the_fallen",
+      "breakpoints": true
     }
   ]
 }
