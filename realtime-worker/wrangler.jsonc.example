@@ -5,7 +5,7 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": { "APP_ORIGIN": "https://REPLACE_WITH_APP_DOMAIN" },
-  "d1_databases": [{ "binding": "DB", "database_name": "REPLACE_WITH_CHAIN_CLASH_D1_NAME", "database_id": "REPLACE_WITH_D1_ID" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "REPLACE_WITH_CHAIN_CLASH_D1_NAME", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "../drizzle" }],
   "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ChainClashRoom" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChainClashRoom"] }],
   "ai": { "binding": "AI" }
