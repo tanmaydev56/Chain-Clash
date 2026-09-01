@@ -1,5 +1,7 @@
+import { env } from 'cloudflare:workers';
 import { getGameDb } from '@/lib/game-db';
-import { categories, getWords, isValidCategoryWord, normalizeWord, type Category } from '@/lib/game-data';
+import { categories, getWords, normalizeWord, type Category } from '@/lib/game-data';
+import { d1WordCache, validateCategoryWord } from '@/lib/word-validation';
 
 type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null; created_at: number; updated_at: number };
 type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
@@ -46,18 +48,17 @@ async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], curr
   }
 }
 
-async function cacheVerdict(db: D1Database, category: Category, word: string, verdict: string, source: string, now: number) {
-  await db.prepare(`INSERT INTO word_cache (category, word, verdict, source, updated_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(category, word) DO UPDATE SET verdict = excluded.verdict, source = excluded.source, updated_at = excluded.updated_at`).bind(category, word, verdict, source, now).run();
-}
-
+// Layered validation: pre-checks + seed list (instant) → word_cache (one D1
+// read) → AI judge (one call, then cached forever). Set the OPENAI_API_KEY
+// Worker secret to enable the AI layer — without it, only the curated seed
+// words are accepted. See CODEX-BRIEF.md → Feature 1.
 async function validateWord(db: D1Database, category: Category, rawWord: string, now: number) {
-  const word = normalizeWord(rawWord);
-  if (!isValidCategoryWord(category, rawWord)) return { valid: false, source: 'curated' };
-  const cached = await db.prepare('SELECT verdict, source FROM word_cache WHERE category = ? AND word = ?').bind(category, word).first<{ verdict: string; source: string }>();
-  if (cached?.verdict === 'accepted' && cached.source === 'curated') return { valid: true, source: 'curated' };
-  await cacheVerdict(db, category, word, 'accepted', 'curated', now);
-  return { valid: true, source: 'curated' };
+  const result = await validateCategoryWord(category, rawWord, {
+    cache: d1WordCache(db, () => now),
+    aiKey: (env as { OPENAI_API_KEY?: string }).OPENAI_API_KEY ?? null,
+    fallbackAccept: false,
+  });
+  return { valid: result.valid, source: result.source };
 }
 
 async function settleRoom(db: D1Database, code: string, now: number) {
