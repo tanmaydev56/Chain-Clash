@@ -9,7 +9,7 @@ import { categories, getWords, isValidCategoryWord, normalizeWord, type Category
 
 type Player = { id: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
 type Move = { id: string; word: string; valid: number; created_at: number; player_name: string };
-type RoomState = { room: { code: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null }; players: Player[]; moves: Move[] };
+type RoomState = { room: { code: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; turn_deadline: number | null; state_version?: number }; players: Player[]; moves: Move[] };
 type OnlineSession = { code: string; playerId: string; state: RoomState };
 type GameResponse = { code?: string; playerId?: string; state?: RoomState; error?: string; valid?: boolean; leaderboard?: Array<{ player_name: string; wins: number; best_score: number }>; stats?: { gamesPlayed: number; wins: number; bestScore: number; xp: number; mmr: number; level: number; dailyStreak: number }; key?: string; category?: Category; completed?: boolean };
 type WindowWithWebkitAudio = Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext };
@@ -46,6 +46,7 @@ export function GameClient() {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState<OnlineSession | null>(null);
+  const [realtimeMode, setRealtimeMode] = useState<'idle' | 'connecting' | 'live' | 'fallback'>('idle');
   const [leaderboard, setLeaderboard] = useState<Array<{ player_name: string; wins: number; best_score: number }>>([]);
   const [profile, setProfile] = useState<{ stats: { gamesPlayed: number; wins: number; bestScore: number; xp: number; mmr: number; level: number; dailyStreak: number } } | null>(null);
   const [daily, setDaily] = useState<{ key: string; category: Category; completed: boolean } | null>(null);
@@ -63,6 +64,10 @@ export function GameClient() {
   const [feedback, setFeedback] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const resumeAllowedRef = useRef(true);
+  const realtimeSocketRef = useRef<WebSocket | null>(null);
+  const soundOnRef = useRef(soundOn);
+
+  useEffect(() => { soundOnRef.current = soundOn; }, [soundOn]);
 
   const currentLetter = (chain.at(-1)?.at(-1) ?? 't').toLowerCase();
 
@@ -141,20 +146,69 @@ export function GameClient() {
     return () => window.clearInterval(timer);
   }, [losePracticeLife, practiceStatus, screen, turn]);
 
+  const onlineCode = online?.code;
   const refreshRoom = useCallback(async () => {
-    if (!online?.code) return;
-    const response = await fetch(`/api/game?code=${encodeURIComponent(online.code)}`, { cache: 'no-store' });
+    if (!onlineCode) return;
+    const response = await fetch(`/api/game?code=${encodeURIComponent(onlineCode)}`, { cache: 'no-store' });
     if (response.ok) {
       const state = await response.json() as RoomState;
       setOnline((session) => session ? { ...session, state } : null);
     }
-  }, [online]);
+  }, [onlineCode]);
 
   useEffect(() => {
-    if (screen !== 'online' || !online) return;
+    if (screen !== 'online' || !online?.code) return;
+    let cancelled = false;
+    let reconnectTimer: number | undefined;
+    let socket: WebSocket | null = null;
+    let failures = 0;
+
+    async function connect() {
+      try {
+        const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'realtime_ticket', code: online?.code }) });
+        const data = await response.json() as { url?: string; error?: string };
+        if (!response.ok || !data.url) throw new Error(data.error ?? 'Realtime is unavailable.');
+        if (cancelled) return;
+        socket = new WebSocket(data.url.replace(/^http/, 'ws'));
+        realtimeSocketRef.current = socket;
+        socket.addEventListener('open', () => { if (!cancelled) { failures = 0; setRealtimeMode('live'); } });
+        socket.addEventListener('message', (event) => {
+          if (cancelled || typeof event.data !== 'string') return;
+          let message: { type?: string; state?: RoomState; error?: string; valid?: boolean };
+          try { message = JSON.parse(event.data) as typeof message; } catch { return; }
+          if (message.type === 'room_state' && message.state) {
+            setOnline((session) => session ? { ...session, state: message.state as RoomState } : null);
+            setLoading(false);
+          } else if (message.type === 'move_result' && typeof message.valid === 'boolean') {
+            playTone(soundOnRef.current, message.valid ? 660 : 145, message.valid ? 0.08 : 0.18);
+            if (navigator.vibrate) navigator.vibrate(message.valid ? 18 : 90);
+            setNotice(message.valid ? 'Great chain!' : 'Invalid word — one life lost.');
+          } else if (message.type === 'error') {
+            setLoading(false); setNotice(message.error ?? 'Realtime command rejected.');
+          }
+        });
+        socket.addEventListener('close', () => {
+          if (cancelled) return;
+          realtimeSocketRef.current = null; failures += 1;
+          if (failures >= 3) { setRealtimeMode('fallback'); return; }
+          setRealtimeMode('connecting');
+          reconnectTimer = window.setTimeout(connect, 1500);
+        });
+        socket.addEventListener('error', () => socket?.close());
+      } catch {
+        if (!cancelled) { realtimeSocketRef.current = null; setRealtimeMode('fallback'); }
+      }
+    }
+
+    void connect();
+    return () => { cancelled = true; if (reconnectTimer) window.clearTimeout(reconnectTimer); realtimeSocketRef.current = null; socket?.close(1000, 'Leaving room'); };
+  }, [online?.code, screen]);
+
+  useEffect(() => {
+    if (screen !== 'online' || !online || realtimeMode !== 'fallback') return;
     const timer = window.setInterval(refreshRoom, 1200);
     return () => window.clearInterval(timer);
-  }, [online, refreshRoom, screen]);
+  }, [online, realtimeMode, refreshRoom, screen]);
 
   async function roomAction(action: 'create' | 'join') {
     resumeAllowedRef.current = false;
@@ -172,6 +226,11 @@ export function GameClient() {
   async function submitOnline(word: string) {
     if (!online) return;
     setLoading(true); setNotice('');
+    const socket = realtimeSocketRef.current;
+    if (realtimeMode === 'live' && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'submit_word', commandId: crypto.randomUUID(), word }));
+      return;
+    }
     try {
       const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', code: online.code, word }) });
       const data = await response.json() as GameResponse;
@@ -213,6 +272,11 @@ export function GameClient() {
   async function addBot() {
     if (!online) return;
     setLoading(true); setNotice('');
+    const socket = realtimeSocketRef.current;
+    if (realtimeMode === 'live' && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'add_bot', commandId: crypto.randomUUID() }));
+      return;
+    }
     try {
       const response = await fetch('/api/game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add_bot', code: online.code }) });
       const data = await response.json() as GameResponse;
