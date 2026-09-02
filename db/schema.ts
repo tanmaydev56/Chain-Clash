@@ -12,6 +12,7 @@ export const rooms = sqliteTable('rooms', {
   turnDeadline: integer('turn_deadline'),
   challengeKey: text('challenge_key'),
   statsRecorded: integer('stats_recorded', { mode: 'boolean' }).notNull().default(false),
+  stateVersion: integer('state_version').notNull().default(0),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
@@ -67,6 +68,10 @@ export const playerStats = sqliteTable('player_stats', {
   lastDailyKey: text('last_daily_key'),
   updatedAt: integer('updated_at').notNull(),
 });
+
+export const guestSessions = sqliteTable('guest_sessions', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull(), expiresAt: integer('expires_at').notNull(), revokedAt: integer('revoked_at'), createdAt: integer('created_at').notNull(),
+}, (table) => [index('idx_guest_sessions_user').on(table.userId, table.expiresAt)]);
 
 export const weeklyLeaderboard = sqliteTable('weekly_leaderboard', {
   userId: text('user_id').notNull(),

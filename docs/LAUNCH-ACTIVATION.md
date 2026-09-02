@@ -6,8 +6,8 @@ The app can be deployed and played as a guest-first web game now. The items belo
 
 1. Configure a real custom domain and update the public base URL in `app/layout.tsx`.
 2. Enable an error tracker and product analytics provider, then add only their public client identifiers as hosted environment values. Confirm the consent choice is honored before sending optional events.
-3. Provision a Cloudflare Durable Object room coordinator and migrate room polling to WebSockets plus alarms. This needs a Cloudflare account-level binding and a load test, so it cannot safely be switched on from this repository alone.
-4. Set a scheduled cleanup job for finished and abandoned rooms. Choose retention periods first; the current delete-account flow already removes user-owned game data.
+3. Deploy the realtime Worker in `realtime-worker/` after replacing its D1 id and production `APP_ORIGIN`. Add the `REALTIME_TICKET_SECRET` Worker secret, then configure the same secret plus `REALTIME_ORIGIN` on the main app. Polling remains the automatic fallback until realtime passes a two-browser production smoke test.
+4. Durable Object alarms perform transient room cleanup. Waiting rooms with no connected human live for 5 minutes, abandoned active rooms for 15 minutes, and finished realtime snapshots for 5 minutes. D1 match/profile/ranking history is not deleted by these alarms.
 5. Add a real support email or support form, then update the privacy policy and Play listing with that contact.
 
 ## Identity and purchases
@@ -29,3 +29,14 @@ The app can be deployed and played as a guest-first web game now. The items belo
 - Review reports regularly and maintain the blocked-word list.
 - Load-test concurrent rooms after the Durable Object migration, not against the polling implementation.
 - Rotate any credentials that were ever pasted into chat or logs.
+
+## Required server-only configuration
+
+- `GUEST_SESSION_SECRET`: main app cookie-signing secret. Required before guest buttons work.
+- `REALTIME_TICKET_SECRET`: identical server-only value on the main app and realtime Worker; use a different value from the guest-session secret.
+- `REALTIME_ORIGIN`: public HTTPS origin of the realtime Worker, for example `https://chain-clash-realtime.<subdomain>.workers.dev`.
+- `APP_ORIGIN`: non-secret exact HTTPS app origin in the realtime Worker, used to reject cross-origin socket upgrades.
+
+Generate each secret independently with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. Never commit the output. The realtime ticket lasts 60 seconds, is HMAC-SHA256 signed, contains room/user/session/player/expiry/nonce claims, and its nonce is accepted only once by that room's Durable Object.
+
+Polling may be removed only after the realtime Worker is deployed, two-browser reconnect/timeout/bot tests pass in production, and realtime connection/error telemetry shows the rollout is stable.

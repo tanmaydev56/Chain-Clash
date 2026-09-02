@@ -3,6 +3,8 @@ import { mergeProps } from '@base-ui/react/merge-props';
 import { useRender } from '@base-ui/react/use-render';
 
 import { cn } from '@/lib/utils';
+// Breadcrumb items can render non-anchor navigation primitives.
+// oxlint-disable jsx-a11y/prefer-tag-over-role
 import { ChevronRightIcon, MoreHorizontalIcon } from 'lucide-react';
 
 function Breadcrumb({ className, ...props }: React.ComponentProps<'nav'>) {

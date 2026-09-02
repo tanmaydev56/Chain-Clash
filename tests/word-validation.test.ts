@@ -98,3 +98,30 @@ void test('an AI failure falls back instead of throwing', async () => {
   );
   assert.deepEqual(result, { valid: false, source: 'fallback', word: 'zorptron' });
 });
+
+void test('Workers AI judge validates an unknown word and caches its strict verdict', async () => {
+  const cache = fakeCache();
+  let calls = 0;
+  const judge = async () => { calls += 1; return true; };
+  const first = await validateCategoryWord('animals', 'zorptron', { cache, judge, fallbackAccept: false });
+  const second = await validateCategoryWord('animals', 'zorptron', { cache, judge, fallbackAccept: false });
+  assert.deepEqual(first, { valid: true, source: 'workers-ai', word: 'zorptron' });
+  assert.equal(second.source, 'cache');
+  assert.equal(calls, 1);
+  assert.equal(cache.writes[0]?.source, 'workers-ai');
+});
+
+void test('Workers AI timeout or malformed response rejects safely without caching', async () => {
+  const cache = fakeCache();
+  const result = await validateCategoryWord('animals', 'zorptron', { cache, judge: async () => null, fallbackAccept: false });
+  assert.deepEqual(result, { valid: false, source: 'fallback', word: 'zorptron' });
+  assert.equal(cache.writes.length, 0);
+});
+
+void test('blocklist wins without calling Workers AI', async () => {
+  let calls = 0;
+  const result = await validateCategoryWord('things', 'shit', { judge: async () => { calls += 1; return true; } });
+  assert.equal(result.source, 'blocked');
+  assert.equal(result.valid, false);
+  assert.equal(calls, 0);
+});

@@ -4,6 +4,8 @@ import { useRender } from '@base-ui/react/use-render';
 import { cva, type VariantProps } from 'class-variance-authority';
 
 import { cn } from '@/lib/utils';
+// The generic item container accepts arbitrary list markup.
+// oxlint-disable jsx-a11y/prefer-tag-over-role
 import { Separator } from '@/components/ui/separator';
 
 function ItemGroup({ className, ...props }: React.ComponentProps<'div'>) {
