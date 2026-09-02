@@ -14,13 +14,13 @@ function base64UrlToBytes(value: string) {
   } catch { return null; }
 }
 
-async function hmac(value: string, secret: string, usages: KeyUsage[]) {
+async function hmac(secret: string, usages: KeyUsage[]) {
   return crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, usages);
 }
 
 export async function createRealtimeTicket(ticket: RealtimeTicket, secret: string) {
   const payload = bytesToBase64Url(encoder.encode(JSON.stringify(ticket)));
-  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmac(payload, secret, ['sign']), encoder.encode(payload)));
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmac(secret, ['sign']), encoder.encode(payload)));
   return `${payload}.${bytesToBase64Url(signature)}`;
 }
 
@@ -31,8 +31,7 @@ export async function verifyRealtimeTicket(token: string, secret: string, now = 
   if (!payload || !signature) return null;
   const signatureBytes = base64UrlToBytes(signature);
   if (!signatureBytes) return null;
-  const valid = await crypto.subtle.verify('HMAC', await hmac(payload, secret, ['verify']), signatureBytes, encoder.encode(payload));
-  if (!valid) return null;
+  const valid = await crypto.subtle.verify('HMAC', await hmac(secret, ['verify']), signatureBytes, encoder.encode(payload));
   const payloadBytes = base64UrlToBytes(payload);
   if (!payloadBytes) return null;
   try {
