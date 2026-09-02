@@ -32,6 +32,7 @@ export async function verifyRealtimeTicket(token: string, secret: string, now = 
   const signatureBytes = base64UrlToBytes(signature);
   if (!signatureBytes) return null;
   const valid = await crypto.subtle.verify('HMAC', await hmac(secret, ['verify']), signatureBytes, encoder.encode(payload));
+  if (!valid) return null;
   const payloadBytes = base64UrlToBytes(payload);
   if (!payloadBytes) return null;
   try {
