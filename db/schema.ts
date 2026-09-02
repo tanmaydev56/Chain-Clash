@@ -10,6 +10,8 @@ export const rooms = sqliteTable('rooms', {
   winnerPlayerId: text('winner_player_id'),
   mode: text('mode').notNull().default('classic'),
   blockedLetter: text('blocked_letter'),
+  turnDirection: integer('turn_direction').notNull().default(1),
+  freezeNext: integer('freeze_next', { mode: 'boolean' }).notNull().default(false),
   isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
   turnDeadline: integer('turn_deadline'),
   challengeKey: text('challenge_key'),

@@ -7,9 +7,10 @@ import { claimRoomTurn, isHostActionAuthorized } from '@/lib/game-state';
 import { createRealtimeTicket } from '@/lib/realtime-ticket';
 import { cleanDisplayName } from '@/lib/user-input';
 import { categoryForWord, getMode, levelForXp, scoreForWord, turnSecondsForWord } from '@/lib/game-modes';
+import { applyPowerUp, powerUpCost, type PowerUpState } from '@/lib/power-ups';
 
-type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; mode: string; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; state_version: number; created_at: number; updated_at: number };
-type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; joined_at: number };
+type RoomRow = { code: string; host_player_id: string; category: Category; status: 'waiting' | 'active' | 'finished'; current_letter: string; turn_player_id: string | null; winner_player_id: string | null; mode: string; blocked_letter: string | null; freeze_next: number; turn_direction: number; is_public: number; turn_deadline: number | null; challenge_key: string | null; stats_recorded: number; state_version: number; created_at: number; updated_at: number };
+type PlayerRow = { id: string; user_id: string | null; room_code: string; name: string; is_bot: number; score: number; lives: number; shield: number; joined_at: number };
 type PlayerStatsRow = { games_played: number; wins: number; losses: number; best_score: number; total_score: number; xp: number; mmr: number; coins: number; daily_streak: number; last_daily_key: string | null };
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const botNames = ['WordBot', 'Lime Lynx', 'Coral Crow', 'Turbo Tapir', 'Neon Narwhal'];
@@ -40,20 +41,21 @@ async function createCode(db: D1Database) {
 async function readRoom(db: D1Database, code: string) { return db.prepare('SELECT * FROM rooms WHERE code = ?').bind(code).first<RoomRow>(); }
 async function readPlayers(db: D1Database, code: string) { return db.prepare('SELECT * FROM players WHERE room_code = ? ORDER BY joined_at ASC').bind(code).all<PlayerRow>(); }
 
-function nextAlive(players: PlayerRow[], currentId: string, currentLives: number) {
+function nextAlive(players: PlayerRow[], currentId: string, currentLives: number, direction = 1) {
   const alive = players.filter((player) => player.id === currentId ? currentLives > 0 : player.lives > 0);
   const currentIndex = alive.findIndex((player) => player.id === currentId);
-  return { alive, next: alive.length ? alive[(currentIndex >= 0 ? currentIndex + 1 : 0) % alive.length] : null };
+  return { alive, next: alive.length ? alive[(currentIndex >= 0 ? currentIndex + direction + alive.length : 0) % alive.length] : null };
 }
 
 async function advance(db: D1Database, room: RoomRow, players: PlayerRow[], currentId: string, currentLives: number, now: number, nextLetter = room.current_letter, wordCount = 0) {
-  const { alive, next } = nextAlive(players, currentId, currentLives);
+  const { alive, next } = nextAlive(players, currentId, currentLives, room.turn_direction || 1);
   const finished = players.length > 1 && alive.length === 1;
   const winner = finished ? alive[0] : null;
   const mode = getMode(room.mode); const category = categoryForWord(mode, Object.keys(categories) as Category[], wordCount);
   await db.prepare(`UPDATE rooms SET status = ?, category = ?, current_letter = ?, turn_player_id = ?, winner_player_id = ?, turn_deadline = ?, updated_at = ? WHERE code = ?`).bind(
-    finished ? 'finished' : 'active', category, nextLetter, finished ? null : next?.id ?? null, winner?.id ?? null, finished ? null : now + turnSecondsForWord(mode, wordCount) * 1000, now, room.code,
+    finished ? 'finished' : 'active', category, nextLetter, finished ? null : next?.id ?? null, winner?.id ?? null, finished ? null : now + turnSecondsForWord(mode, wordCount) * 1000 * (room.freeze_next ? 0.5 : 1), now, room.code,
   ).run();
+  if (room.freeze_next) await db.prepare('UPDATE rooms SET freeze_next = 0 WHERE code = ?').bind(room.code).run();
   if (finished) await recordFinishedRoom(db, room, players, winner, now);
 }
 
@@ -187,6 +189,10 @@ export async function GET(request: Request) {
       const rows = await db.prepare('SELECT room_code, mode, category, score, won, created_at FROM match_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').bind(userId).all();
       return json({ history: rows.results });
     }
+    if (url.searchParams.get('achievements') === '1') {
+      const { userId } = await requireGuest(db, request, now); const rows = await db.prepare('SELECT achievement_id FROM achievements WHERE user_id = ?').bind(userId).all<{ achievement_id: string }>();
+      return json({ achievements: rows.results.map((row) => row.achievement_id) });
+    }
     if (url.searchParams.get('daily') === '1') {
       const { userId } = await requireGuest(db, request, now); const key = utcDay(now);
       const attempt = await db.prepare('SELECT score, won, completed_at FROM daily_attempts WHERE user_id = ? AND challenge_key = ?').bind(userId, key).first();
@@ -205,7 +211,7 @@ export async function POST(request: Request) {
       try { const existing = await requireGuest(db, request, now); return json({ name: existing.name }); }
       catch { const name = cleanDisplayName(body.name); const session = await issueGuestSession(db, request, name, now); return new Response(JSON.stringify({ name }), { status: 201, headers: { 'Content-Type': 'application/json', 'Set-Cookie': session.cookie } }); }
     }
-    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], realtime_ticket: [30, 60_000], report: [5, 3_600_000], update_profile: [8, 60_000] };
+    const limits: Record<string, [number, number]> = { submit: [18, 60_000], powerup: [10, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], realtime_ticket: [30, 60_000], report: [5, 3_600_000], update_profile: [8, 60_000] };
     const limit = limits[action];
     if (limit && !allowRequest(request, action, now, limit[0], limit[1])) return json({ error: 'Too many requests. Please wait a moment.' }, 429);
     const actor = await requireGuest(db, request, now);
@@ -334,6 +340,24 @@ export async function POST(request: Request) {
       if (room.status === 'waiting') await db.prepare(`UPDATE rooms SET status = 'active', turn_player_id = host_player_id, turn_deadline = ?, updated_at = ? WHERE code = ?`).bind(now + mode.turnSeconds * 1000, now, code).run();
       return json({ state: await roomState(db, code, now) });
     }
+    if (action === 'powerup') {
+      const code = stringValue(body.code).trim().toUpperCase(); const commandId = stringValue(body.commandId); const powerUp = stringValue(body.powerUp); const cost = powerUpCost(powerUp);
+      if (!commandId || commandId.length > 80 || cost === null) return json({ error: 'Invalid power-up command.' }, 400);
+      const room = await readRoom(db, code); const player = await db.prepare('SELECT * FROM players WHERE room_code = ? AND user_id = ?').bind(code, actor.userId).first<PlayerRow>();
+      if (!room || !player || player.is_bot || room.status !== 'active' || room.turn_player_id !== player.id || !getMode(room.mode).powerUpsEnabled) return json({ error: 'Power-ups can only be used on your turn.' }, 409);
+      const duplicate = await db.prepare('SELECT 1 FROM power_up_uses WHERE command_id = ?').bind(commandId).first(); if (duplicate) return json({ state: await roomState(db, code, now), duplicate: true });
+      const players = (await readPlayers(db, code)).results;
+      const effect = applyPowerUp({ turnPlayerId: room.turn_player_id, status: room.status, blockedLetter: room.blocked_letter, freezeNext: Boolean(room.freeze_next), turnDirection: room.turn_direction === -1 ? -1 : 1, usedPowerUpTurnId: null, players: players.map((item) => ({ id: item.id, score: item.score, shield: Boolean(item.shield), joinedAt: item.joined_at })) } as PowerUpState, player.id, powerUp);
+      if (!effect.ok) return json({ error: effect.error }, 409);
+      const spend = await db.prepare('UPDATE player_stats SET coins = coins - ? WHERE user_id = ? AND coins >= ?').bind(cost, actor.userId, cost).run(); if ((spend.meta.changes ?? 0) !== 1) return json({ error: 'Not enough coins.' }, 409);
+      await db.batch([
+        db.prepare('INSERT INTO power_up_uses (command_id,room_code,user_id,power_up,created_at) VALUES (?, ?, ?, ?, ?)').bind(commandId, code, actor.userId, powerUp, now),
+        db.prepare('UPDATE rooms SET blocked_letter = ?, freeze_next = ?, turn_direction = ?, updated_at = ? WHERE code = ?').bind(effect.state.blockedLetter, effect.state.freezeNext ? 1 : 0, effect.state.turnDirection, now, code),
+        ...effect.state.players.map((item) => db.prepare('UPDATE players SET score = ?, shield = ? WHERE id = ?').bind(item.score, item.shield ? 1 : 0, item.id)),
+      ]);
+      if (powerUp === 'skip') await advance(db, { ...room, blocked_letter: effect.state.blockedLetter, freeze_next: effect.state.freezeNext ? 1 : 0, turn_direction: effect.state.turnDirection }, players, player.id, player.lives, now);
+      const coins = await db.prepare('SELECT coins FROM player_stats WHERE user_id = ?').bind(actor.userId).first<{ coins: number }>(); return json({ state: await roomState(db, code, now), coins: coins?.coins ?? 0, message: effect.message });
+    }
     if (action === 'submit') {
       const code = stringValue(body.code).trim().toUpperCase(); const rawWord = stringValue(body.word); const word = normalizeWord(rawWord);
       const seat = await db.prepare('SELECT id FROM players WHERE room_code = ? AND user_id = ?').bind(code, actor.userId).first<{ id: string }>(); const playerId = seat?.id ?? '';
@@ -343,11 +367,11 @@ export async function POST(request: Request) {
       if (!player || player.lives < 1 || player.is_bot) return json({ error: 'Player is not active.' }, 403);
       const used = new Set((await db.prepare('SELECT word FROM moves WHERE room_code = ? AND valid = 1').bind(code).all<{ word: string }>()).results.map((row) => row.word));
       const check = word.startsWith(room.current_letter) && !used.has(word) ? await validateWord(db, room.category, rawWord, now) : { valid: false, source: 'rule' };
-      const lives = check.valid ? player.lives : Math.max(0, player.lives - 1); const score = player.score + (check.valid ? scoreForWord(room.mode, word, Math.max(0, ((room.turn_deadline ?? now) - now) / 1000)) : 0); const players = (await readPlayers(db, code)).results;
+      const shielded = !check.valid && Boolean(player.shield); const lives = check.valid || shielded ? player.lives : Math.max(0, player.lives - 1); const score = player.score + (check.valid ? scoreForWord(room.mode, word, Math.max(0, ((room.turn_deadline ?? now) - now) / 1000)) : 0); const players = (await readPlayers(db, code)).results;
       if (!await claimRoomTurn(db, { code, playerId, stateVersion: room.state_version, now })) return json({ error: 'This turn was already resolved. Refresh the room.' }, 409);
       await db.batch([
         db.prepare('INSERT INTO moves (id, room_code, player_id, word, valid, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), code, playerId, word || '—', check.valid ? 1 : 0, now),
-        db.prepare('UPDATE players SET score = ?, lives = ?, last_seen_at = ? WHERE id = ?').bind(score, lives, now, playerId),
+        db.prepare('UPDATE players SET score = ?, lives = ?, shield = ?, last_seen_at = ? WHERE id = ?').bind(score, lives, shielded ? 0 : player.shield, now, playerId),
       ]);
       const adjusted = players.map((item) => item.id === playerId ? { ...item, score, lives } : item);
       await advance(db, room, adjusted, playerId, lives, now, check.valid ? word.at(-1) : room.current_letter, used.size + (check.valid ? 1 : 0));

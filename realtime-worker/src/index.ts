@@ -2,11 +2,12 @@ import { DurableObject } from 'cloudflare:workers';
 import { categories, normalizeWord, type Category } from '../../lib/game-data';
 import { verifyRealtimeTicket } from '../../lib/realtime-ticket';
 import { categoryValidationDefinition, d1WordCache, validateCategoryWord } from '../../lib/word-validation';
-import { ROOM_POLICY, RoomCommandQueue, addBot, publicRoomState, resolveAlarm, resolveDisconnectGrace, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from './room-engine';
+import { getPowerUp } from '../../lib/game-modes';
+import { ROOM_POLICY, RoomCommandQueue, activatePowerUp, addBot, publicRoomState, resolveAlarm, resolveDisconnectGrace, setConnected, shouldExpireRoom, submitWord, type RealtimeRoomState } from './room-engine';
 
 export interface RealtimeEnv { DB: D1Database; ROOMS: DurableObjectNamespace<ChainClashRoom>; AI: Ai; REALTIME_TICKET_SECRET: string; APP_ORIGIN?: string }
 type Connection = { userId: string; playerId: string; sessionId: string };
-type Command = { type?: 'refresh' | 'submit_word' | 'add_bot'; commandId?: string; word?: string };
+type Command = { type?: 'refresh' | 'submit_word' | 'add_bot' | 'powerup'; commandId?: string; word?: string; powerUp?: string };
 
 function weekKey(now: number) { const date = new Date(now); const day = date.getUTCDay() || 7; date.setUTCDate(date.getUTCDate() - day + 1); return date.toISOString().slice(0, 10); }
 function previousUtcDay(day: string) { return new Date(new Date(`${day}T00:00:00.000Z`).getTime() - 86_400_000).toISOString().slice(0, 10); }
@@ -65,6 +66,17 @@ export class ChainClashRoom extends DurableObject<RealtimeEnv> {
     if (!command.commandId) return this.reject(ws, 'Command ID is required.');
     const before = this.requireSnapshot(); let result;
     if (command.type === 'add_bot') result = addBot(before, connection.userId, command.commandId, Date.now());
+    else if (command.type === 'powerup') {
+      const powerUp = getPowerUp(command.powerUp); if (!powerUp) return this.reject(ws, 'Unknown power-up.', command.commandId);
+      const actor = before.players.find((player) => player.id === connection.playerId && player.userId === connection.userId);
+      if (!actor || before.turnPlayerId !== actor.id || before.status !== 'active') return this.reject(ws, 'Power-ups can only be used on your turn.', command.commandId);
+      const use = await this.env.DB.prepare('INSERT OR IGNORE INTO power_up_uses (command_id,room_code,user_id,power_up,created_at) VALUES (?,?,?,?,?)').bind(command.commandId,before.code,connection.userId,powerUp.id,Date.now()).run();
+      if ((use.meta.changes ?? 0) !== 1) return this.reject(ws, 'Duplicate command.', command.commandId);
+      const spend = await this.env.DB.prepare('UPDATE player_stats SET coins = coins - ? WHERE user_id = ? AND coins >= ?').bind(powerUp.cost,connection.userId,powerUp.cost).run();
+      if ((spend.meta.changes ?? 0) !== 1) { await this.env.DB.prepare('DELETE FROM power_up_uses WHERE command_id=?').bind(command.commandId).run(); return this.reject(ws, 'Not enough coins.', command.commandId); }
+      result = activatePowerUp(before, connection.userId, command.commandId, powerUp.id, Date.now());
+      if (!result.accepted) { await this.env.DB.prepare('UPDATE player_stats SET coins = coins + ? WHERE user_id = ?').bind(powerUp.cost,connection.userId).run(); await this.env.DB.prepare('DELETE FROM power_up_uses WHERE command_id=?').bind(command.commandId).run(); }
+    }
     else if (command.type === 'submit_word') {
       const word = normalizeWord(command.word ?? '');
       const canJudge = before.status === 'active' && before.turnPlayerId === connection.playerId && word.startsWith(before.currentLetter) && !before.usedWords.includes(word);
@@ -110,7 +122,7 @@ export class ChainClashRoom extends DurableObject<RealtimeEnv> {
     const players = await this.env.DB.prepare('SELECT id,user_id,name,is_bot,score,lives,shield,joined_at FROM players WHERE room_code=? ORDER BY joined_at').bind(code).all<{ id: string; user_id: string | null; name: string; is_bot: number; score: number; lives: number; shield: number; joined_at: number }>();
     const moves = await this.env.DB.prepare('SELECT id,player_id,word,valid,created_at FROM moves WHERE room_code=? ORDER BY created_at').bind(code).all<{ id: string; player_id: string; word: string; valid: number; created_at: number }>();
     const finalization = await this.env.DB.prepare('SELECT stats_recorded FROM rooms WHERE code=?').bind(code).first<{ stats_recorded: number }>();
-    this.snapshot = { code, hostPlayerId: room.host_player_id, category: room.category, mode: room.mode, blockedLetter: room.blocked_letter, status: room.status, currentLetter: room.current_letter, turnPlayerId: room.turn_player_id, winnerPlayerId: room.winner_player_id, deadline: room.turn_deadline, challengeKey: room.challenge_key, version: room.state_version, players: players.results.map((p) => ({ id: p.id, userId: p.user_id, name: p.name, bot: Boolean(p.is_bot), score: p.score, lives: p.lives, shield: Boolean(p.shield), joinedAt: p.joined_at, disconnectedAt: null })), moves: moves.results.map((m) => ({ id: m.id, playerId: m.player_id, word: m.word, valid: Boolean(m.valid), createdAt: m.created_at })), usedWords: moves.results.filter((m) => m.valid).map((m) => m.word), processedCommands: [], updatedAt: room.updated_at, finalized: Boolean(finalization?.stats_recorded) };
+    this.snapshot = { code, hostPlayerId: room.host_player_id, category: room.category, mode: room.mode, blockedLetter: room.blocked_letter, freezeNext: false, turnDirection: 1, usedPowerUpTurnId: null, status: room.status, currentLetter: room.current_letter, turnPlayerId: room.turn_player_id, winnerPlayerId: room.winner_player_id, deadline: room.turn_deadline, challengeKey: room.challenge_key, version: room.state_version, players: players.results.map((p) => ({ id: p.id, userId: p.user_id, name: p.name, bot: Boolean(p.is_bot), score: p.score, lives: p.lives, shield: Boolean(p.shield), joinedAt: p.joined_at, disconnectedAt: null })), moves: moves.results.map((m) => ({ id: m.id, playerId: m.player_id, word: m.word, valid: Boolean(m.valid), createdAt: m.created_at })), usedWords: moves.results.filter((m) => m.valid).map((m) => m.word), processedCommands: [], updatedAt: room.updated_at, finalized: Boolean(finalization?.stats_recorded) };
     await this.ctx.storage.put('snapshot', this.snapshot);
   }
 
