@@ -36,3 +36,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Account-specific Wrangler deployment configuration
+/realtime-worker/wrangler.production.jsonc
