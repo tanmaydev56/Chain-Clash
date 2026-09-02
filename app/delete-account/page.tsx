@@ -1,5 +1,6 @@
 'use client';
-import Link from 'next/link';
+/* oxlint-disable next/no-html-link-for-pages -- Vinext RSC client navigation is unreliable in production; document navigation is the reliable fallback. */
+
 import { useState } from 'react';
 
 export default function DeleteAccountPage() {
@@ -13,5 +14,5 @@ export default function DeleteAccountPage() {
       window.localStorage.removeItem('chain-clash-name'); window.localStorage.removeItem('chain-clash-room'); setStatus('done');
     } catch { setStatus('error'); }
   }
-  return <main className="mx-auto min-h-dvh max-w-3xl px-6 py-16 text-foreground"><Link href="/" className="text-primary">← Chain Clash</Link><h1 className="mt-8 text-4xl font-black">Delete account data</h1><p className="mt-6 text-muted-foreground">This permanently deletes your guest profile, leaderboard record, and game data from this device’s Chain Clash account.</p>{status === 'done' ? <p className="mt-6 font-bold text-primary">Your account data has been deleted.</p> : <button onClick={erase} disabled={status === 'working'} className="mt-6 rounded-xl bg-destructive px-5 py-3 font-black text-white">{status === 'working' ? 'Deleting…' : 'Delete my data'}</button>}{status === 'error' && <p className="mt-4 text-secondary">Could not delete data. Please try again.</p>}</main>;
+  return <main className="mx-auto min-h-dvh max-w-3xl px-6 py-16 text-foreground"><a href="/" className="text-primary">← Chain Clash</a><h1 className="mt-8 text-4xl font-black">Delete account data</h1><p className="mt-6 text-muted-foreground">This permanently deletes your guest profile, leaderboard record, and game data from this device’s Chain Clash account.</p>{status === 'done' ? <p className="mt-6 font-bold text-primary">Your account data has been deleted.</p> : <button onClick={erase} disabled={status === 'working'} className="mt-6 rounded-xl bg-destructive px-5 py-3 font-black text-white">{status === 'working' ? 'Deleting…' : 'Delete my data'}</button>}{status === 'error' && <p className="mt-4 text-secondary">Could not delete data. Please try again.</p>}</main>;
 }
