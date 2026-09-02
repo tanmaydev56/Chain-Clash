@@ -29,7 +29,8 @@ export class ChainClashRoom extends DurableObject<RealtimeEnv> {
     if (!seat || seat.id !== ticket.playerId) return new Response('Room membership required.', { status: 403 });
     return this.commandQueue.run(async () => {
       if (await this.ctx.storage.get<number>(`ticket:${ticket.nonce}`)) return new Response('Realtime ticket was already used.', { status: 401 });
-      await this.ensureSnapshot(code);
+      try { await this.ensureSnapshot(code); }
+      catch { return new Response('Room not found.', { status: 404 }); }
       const snapshot = this.requireSnapshot();
       let addedSeat = false;
       if (!snapshot.players.some((player) => player.id === seat.id)) {
