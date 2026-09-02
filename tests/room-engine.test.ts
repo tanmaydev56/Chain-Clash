@@ -6,11 +6,11 @@ const now = 1_800_000_000_000;
 
 function room(code = 'ABC123'): RealtimeRoomState {
   return {
-    code, hostPlayerId: 'player-a', category: 'animals', status: 'active', currentLetter: 't', turnPlayerId: 'player-a', winnerPlayerId: null,
+    code, hostPlayerId: 'player-a', category: 'animals', mode: 'classic', blockedLetter: null, status: 'active', currentLetter: 't', turnPlayerId: 'player-a', winnerPlayerId: null,
     deadline: now + ROOM_POLICY.turnMs, challengeKey: null, version: 1, usedWords: [], moves: [], processedCommands: [], updatedAt: now, finalized: false,
     players: [
-      { id: 'player-a', userId: 'user-a', name: 'A', bot: false, score: 0, lives: 3, joinedAt: now, disconnectedAt: null },
-      { id: 'player-b', userId: 'user-b', name: 'B', bot: false, score: 0, lives: 3, joinedAt: now + 1, disconnectedAt: null },
+      { id: 'player-a', userId: 'user-a', name: 'A', bot: false, score: 0, lives: 3, shield: false, joinedAt: now, disconnectedAt: null },
+      { id: 'player-b', userId: 'user-b', name: 'B', bot: false, score: 0, lives: 3, shield: false, joinedAt: now + 1, disconnectedAt: null },
     ],
   };
 }
@@ -20,7 +20,7 @@ void test('two connected players share state while separate rooms remain isolate
   const second = room('XYZ789');
   const changed = submitWord(first, 'user-a', 'move-1', 'tiger', true, now + 10);
   assert.equal(changed.accepted, true);
-  assert.equal(changed.state.players[0]?.score, 50);
+  assert.equal(changed.state.players[0]?.score, 74);
   assert.equal(second.players[0]?.score, 0);
   assert.equal(second.usedWords.length, 0);
 });
@@ -37,7 +37,7 @@ void test('a valid move advances state and a replay cannot score twice', () => {
   assert.equal(first.state.currentLetter, 'r');
   const replay = submitWord(first.state, 'user-a', 'move-1', 'tiger', true, now + 20);
   assert.equal(replay.accepted, false);
-  assert.equal(replay.state.players[0]?.score, 50);
+  assert.equal(replay.state.players[0]?.score, 74);
 });
 
 void test('two concurrent commands are serialized so only one turn succeeds', async () => {

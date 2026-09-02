@@ -8,5 +8,8 @@ declare namespace Cloudflare {
     GUEST_SESSION_SECRET?: string;
     REALTIME_TICKET_SECRET?: string;
     REALTIME_ORIGIN?: string;
+    APP_URL?: string;
+    GOOGLE_CLIENT_ID?: string;
+    GOOGLE_CLIENT_SECRET?: string;
   }
 }

@@ -8,6 +8,8 @@ export const rooms = sqliteTable('rooms', {
   currentLetter: text('current_letter').notNull().default('t'),
   turnPlayerId: text('turn_player_id'),
   winnerPlayerId: text('winner_player_id'),
+  mode: text('mode').notNull().default('classic'),
+  blockedLetter: text('blocked_letter'),
   isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
   turnDeadline: integer('turn_deadline'),
   challengeKey: text('challenge_key'),
@@ -18,7 +20,7 @@ export const rooms = sqliteTable('rooms', {
 });
 
 export const players = sqliteTable('players', {
-  id: text('id').primaryKey(), userId: text('user_id'), roomCode: text('room_code').notNull(), name: text('name').notNull(), isBot: integer('is_bot', { mode: 'boolean' }).notNull().default(false), score: integer('score').notNull().default(0), lives: integer('lives').notNull().default(3), joinedAt: integer('joined_at').notNull(), lastSeenAt: integer('last_seen_at').notNull(),
+  id: text('id').primaryKey(), userId: text('user_id'), roomCode: text('room_code').notNull(), name: text('name').notNull(), isBot: integer('is_bot', { mode: 'boolean' }).notNull().default(false), score: integer('score').notNull().default(0), lives: integer('lives').notNull().default(3), shield: integer('shield', { mode: 'boolean' }).notNull().default(false), joinedAt: integer('joined_at').notNull(), lastSeenAt: integer('last_seen_at').notNull(),
 }, (table) => [index('idx_players_room_code').on(table.roomCode)]);
 
 export const moves = sqliteTable('moves', {
@@ -35,9 +37,13 @@ export const leaderboard = sqliteTable('leaderboard', {
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   displayName: text('display_name').notNull(),
+  googleSubject: text('google_subject'),
+  googleEmail: text('google_email'),
+  linkedAt: integer('linked_at'),
+  avatar: text('avatar'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
-});
+}, (table) => [uniqueIndex('uq_users_google_subject').on(table.googleSubject)]);
 
 export const leaderboardEntries = sqliteTable('leaderboard_entries', {
   userId: text('user_id').primaryKey(),
@@ -64,6 +70,7 @@ export const playerStats = sqliteTable('player_stats', {
   totalScore: integer('total_score').notNull().default(0),
   xp: integer('xp').notNull().default(0),
   mmr: integer('mmr').notNull().default(1000),
+  coins: integer('coins').notNull().default(0),
   dailyStreak: integer('daily_streak').notNull().default(0),
   lastDailyKey: text('last_daily_key'),
   updatedAt: integer('updated_at').notNull(),
@@ -72,6 +79,14 @@ export const playerStats = sqliteTable('player_stats', {
 export const guestSessions = sqliteTable('guest_sessions', {
   id: text('id').primaryKey(), userId: text('user_id').notNull(), expiresAt: integer('expires_at').notNull(), revokedAt: integer('revoked_at'), createdAt: integer('created_at').notNull(),
 }, (table) => [index('idx_guest_sessions_user').on(table.userId, table.expiresAt)]);
+
+export const oauthStates = sqliteTable('oauth_states', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+  usedAt: integer('used_at'),
+  createdAt: integer('created_at').notNull(),
+}, (table) => [index('idx_oauth_states_expiry').on(table.expiresAt)]);
 
 export const weeklyLeaderboard = sqliteTable('weekly_leaderboard', {
   userId: text('user_id').notNull(),

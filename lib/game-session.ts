@@ -25,11 +25,16 @@ function cookieAttributes(request: Request, maxAge: number) {
 }
 
 export async function issueGuestSession(db: D1Database, request: Request, name: string, now: number) {
-  const userId = crypto.randomUUID(); const sessionId = crypto.randomUUID(); const expiresAt = now + 1000 * 60 * 60 * 24 * 365;
+  const userId = crypto.randomUUID();
   await db.batch([
     db.prepare('INSERT INTO users (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)').bind(userId, name, now, now),
-    db.prepare('INSERT INTO guest_sessions (id, user_id, expires_at, revoked_at, created_at) VALUES (?, ?, ?, NULL, ?)').bind(sessionId, userId, expiresAt, now),
   ]);
+  return issueUserSession(db, request, userId, now);
+}
+
+export async function issueUserSession(db: D1Database, request: Request, userId: string, now: number) {
+  const sessionId = crypto.randomUUID(); const expiresAt = now + 1000 * 60 * 60 * 24 * 365;
+  await db.prepare('INSERT INTO guest_sessions (id, user_id, expires_at, revoked_at, created_at) VALUES (?, ?, ?, NULL, ?)').bind(sessionId, userId, expiresAt, now).run();
   return { userId, sessionId, expiresAt, cookie: `${cookieName}=${encodeURIComponent(await createGuestSessionToken(sessionId, secret()))}; ${cookieAttributes(request, 31536000)}` };
 }
 

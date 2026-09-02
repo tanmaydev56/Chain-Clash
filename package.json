@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "prepare:cloudflare": "npm run build && node scripts/prepare-cloudflare-deploy.mjs",
+    "deploy:main": "npm run prepare:cloudflare && wrangler deploy --config dist/server/wrangler.production.json",
     "build:realtime": "wrangler deploy --dry-run --config realtime-worker/wrangler.jsonc --outdir ../dist/realtime-worker",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "test": "node --test tests/*.test.ts",
