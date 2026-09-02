@@ -1,5 +1,6 @@
 import { getWords, normalizeWord, type Category } from '../../lib/game-data.ts';
 import { categoryForWord, getMode, scoreForWord, turnSecondsForWord } from '../../lib/game-modes.ts';
+import { applyPowerUp, type PowerUpState } from '../../lib/power-ups.ts';
 
 export const ROOM_POLICY = {
   /** Legacy test/client compatibility; mode rules own real turn durations. */
@@ -14,7 +15,7 @@ export const ROOM_POLICY = {
 export type RealtimePlayer = { id: string; userId: string | null; name: string; bot: boolean; score: number; lives: number; shield: boolean; joinedAt: number; disconnectedAt: number | null };
 export type RealtimeMove = { id: string; playerId: string; word: string; valid: boolean; createdAt: number };
 export type RealtimeRoomState = {
-  code: string; hostPlayerId: string; category: Category; mode: string; blockedLetter: string | null; status: 'waiting' | 'active' | 'finished'; currentLetter: string;
+  code: string; hostPlayerId: string; category: Category; mode: string; blockedLetter: string | null; freezeNext: boolean; turnDirection: 1 | -1; usedPowerUpTurnId: string | null; status: 'waiting' | 'active' | 'finished'; currentLetter: string;
   turnPlayerId: string | null; winnerPlayerId: string | null; deadline: number | null; challengeKey: string | null; version: number;
   players: RealtimePlayer[]; moves: RealtimeMove[]; usedWords: string[]; processedCommands: string[]; updatedAt: number; finalized: boolean;
 };
@@ -41,16 +42,27 @@ function advance(state: RealtimeRoomState, currentPlayerId: string, now: number,
     state.status = 'finished'; state.winnerPlayerId = alive[0]?.id ?? null; state.turnPlayerId = null; state.deadline = null;
     return;
   }
-  const currentIndex = alive.findIndex((player) => player.id === currentPlayerId);
-  const next = alive[(currentIndex < 0 ? 0 : currentIndex + 1) % alive.length];
+  const currentIndex = alive.findIndex((player) => player.id === currentPlayerId); const direction = state.turnDirection === -1 ? -1 : 1;
+  const next = alive[(currentIndex < 0 ? 0 : currentIndex + direction + alive.length) % alive.length];
   state.status = 'active'; state.currentLetter = nextLetter; state.turnPlayerId = next?.id ?? null;
   const words = state.usedWords.length;
   state.category = categoryForWord(state.mode, ['animals', 'food', 'countries', 'things'], words);
-  state.deadline = next ? now + (next.bot ? ROOM_POLICY.botDelayMs : turnSecondsForWord(state.mode, words) * 1000) : null;
+  const duration = next?.bot ? ROOM_POLICY.botDelayMs : turnSecondsForWord(state.mode, words) * 1000;
+  state.deadline = next ? now + (state.freezeNext ? duration / 2 : duration) : null; state.freezeNext = false; state.usedPowerUpTurnId = null;
+}
+
+export function activatePowerUp(state: RealtimeRoomState, userId: string, commandId: string, powerUp: string, now: number): SubmitResult {
+  if (!commandId || state.processedCommands.includes(commandId)) return { accepted: false, error: 'Duplicate command.', state };
+  const actor = humanForUser(state, userId); if (!actor || actor.bot) return { accepted: false, error: 'Room membership required.', state };
+  const result = applyPowerUp(state as unknown as PowerUpState, actor.id, powerUp);
+  if (!result.ok) return { accepted: false, error: result.error, state };
+  const next = result.state as unknown as RealtimeRoomState; next.processedCommands = [...next.processedCommands.slice(-127), commandId]; next.version += 1; next.updatedAt = now;
+  if (powerUp === 'skip') { next.moves.push({ id: crypto.randomUUID(), playerId: actor.id, word: 'skip', valid: false, createdAt: now }); advance(next, actor.id, now); }
+  return { accepted: true, state: next };
 }
 
 export function submitWord(state: RealtimeRoomState, userId: string, commandId: string, rawWord: string, valid: boolean, now: number): SubmitResult {
-  const next = copy(state);
+  const next = copy(state); next.usedPowerUpTurnId = null;
   if (!commandId || next.processedCommands.includes(commandId)) return { accepted: false, error: 'Duplicate command.', state };
   const player = humanForUser(next, userId);
   if (!player) return { accepted: false, error: 'Room membership required.', state };
@@ -120,5 +132,5 @@ export function shouldExpireRoom(state: RealtimeRoomState, now: number) {
 }
 
 export function publicRoomState(state: RealtimeRoomState) {
-  return { room: { code: state.code, category: state.category, mode: state.mode, blocked_letter: state.blockedLetter, status: state.status, current_letter: state.currentLetter, turn_player_id: state.turnPlayerId, winner_player_id: state.winnerPlayerId, turn_deadline: state.deadline, state_version: state.version }, players: state.players.map(({ userId: _userId, disconnectedAt: _disconnectedAt, ...player }) => ({ id: player.id, name: player.name, is_bot: player.bot ? 1 : 0, score: player.score, lives: player.lives, shield: player.shield ? 1 : 0, joined_at: player.joinedAt })), moves: state.moves.slice(-12).reverse().map((move) => ({ id: move.id, word: move.word, valid: move.valid ? 1 : 0, created_at: move.createdAt, player_name: state.players.find((player) => player.id === move.playerId)?.name ?? 'Player' })) };
+  return { room: { code: state.code, category: state.category, mode: state.mode, blocked_letter: state.blockedLetter, freeze_next: state.freezeNext ? 1 : 0, turn_direction: state.turnDirection, status: state.status, current_letter: state.currentLetter, turn_player_id: state.turnPlayerId, winner_player_id: state.winnerPlayerId, turn_deadline: state.deadline, state_version: state.version }, players: state.players.map(({ userId: _userId, disconnectedAt: _disconnectedAt, ...player }) => ({ id: player.id, name: player.name, is_bot: player.bot ? 1 : 0, score: player.score, lives: player.lives, shield: player.shield ? 1 : 0, joined_at: player.joinedAt })), moves: state.moves.slice(-12).reverse().map((move) => ({ id: move.id, word: move.word, valid: move.valid ? 1 : 0, created_at: move.createdAt, player_name: state.players.find((player) => player.id === move.playerId)?.name ?? 'Player' })) };
 }

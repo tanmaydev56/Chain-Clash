@@ -6,7 +6,7 @@ const now = 1_800_000_000_000;
 
 function room(code = 'ABC123'): RealtimeRoomState {
   return {
-    code, hostPlayerId: 'player-a', category: 'animals', mode: 'classic', blockedLetter: null, status: 'active', currentLetter: 't', turnPlayerId: 'player-a', winnerPlayerId: null,
+    code, hostPlayerId: 'player-a', category: 'animals', mode: 'classic', blockedLetter: null, freezeNext: false, turnDirection: 1, usedPowerUpTurnId: null, status: 'active', currentLetter: 't', turnPlayerId: 'player-a', winnerPlayerId: null,
     deadline: now + ROOM_POLICY.turnMs, challengeKey: null, version: 1, usedWords: [], moves: [], processedCommands: [], updatedAt: now, finalized: false,
     players: [
       { id: 'player-a', userId: 'user-a', name: 'A', bot: false, score: 0, lives: 3, shield: false, joinedAt: now, disconnectedAt: null },
