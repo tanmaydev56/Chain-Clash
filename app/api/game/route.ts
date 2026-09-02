@@ -169,15 +169,23 @@ export async function GET(request: Request) {
   try {
     const db = await getGameDb(); const url = new URL(request.url); const now = Date.now();
     if (url.searchParams.get('leaderboard') === '1') {
-      const rows = await db.prepare('SELECT player_name, wins, best_score FROM weekly_leaderboard WHERE week_key = ? ORDER BY wins DESC, best_score DESC LIMIT 10').bind(weekKey(now)).all();
-      return json({ leaderboard: rows.results });
+      const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'week'; const page = Math.max(0, Math.min(100, Number(url.searchParams.get('page') ?? 0) || 0));
+      const rows = scope === 'all'
+        ? await db.prepare('SELECT player_name, wins, best_score FROM leaderboard_entries ORDER BY wins DESC, best_score DESC LIMIT 20 OFFSET ?').bind(page * 20).all()
+        : await db.prepare('SELECT player_name, wins, best_score FROM weekly_leaderboard WHERE week_key = ? ORDER BY wins DESC, best_score DESC LIMIT 20 OFFSET ?').bind(weekKey(now), page * 20).all();
+      return json({ leaderboard: rows.results, scope, page });
     }
     if (url.searchParams.get('profile') === '1') {
       const { userId } = await requireGuest(db, request, now);
       const stats = await db.prepare('SELECT games_played, wins, losses, best_score, total_score, xp, mmr, daily_streak, last_daily_key FROM player_stats WHERE user_id = ?').bind(userId).first<PlayerStatsRow>();
-      const user = await db.prepare('SELECT display_name, google_subject FROM users WHERE id = ?').bind(userId).first<{ display_name: string; google_subject: string | null }>();
+      const user = await db.prepare('SELECT display_name, google_subject, avatar FROM users WHERE id = ?').bind(userId).first<{ display_name: string; google_subject: string | null; avatar: string | null }>();
       const xp = stats?.xp ?? 0;
-      return json({ name: user?.display_name ?? 'Player', googleLinked: Boolean(user?.google_subject), stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, mmr: stats?.mmr ?? 1000, coins: stats?.coins ?? 0, level: levelForXp(xp), dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
+      return json({ name: user?.display_name ?? 'Player', avatar: user?.avatar ?? null, googleLinked: Boolean(user?.google_subject), stats: { gamesPlayed: stats?.games_played ?? 0, wins: stats?.wins ?? 0, losses: stats?.losses ?? 0, bestScore: stats?.best_score ?? 0, totalScore: stats?.total_score ?? 0, xp, mmr: stats?.mmr ?? 1000, coins: stats?.coins ?? 0, level: levelForXp(xp), dailyStreak: stats?.daily_streak ?? 0, lastDailyKey: stats?.last_daily_key ?? null } });
+    }
+    if (url.searchParams.get('history') === '1') {
+      const { userId } = await requireGuest(db, request, now);
+      const rows = await db.prepare('SELECT room_code, mode, category, score, won, created_at FROM match_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').bind(userId).all();
+      return json({ history: rows.results });
     }
     if (url.searchParams.get('daily') === '1') {
       const { userId } = await requireGuest(db, request, now); const key = utcDay(now);
@@ -197,13 +205,19 @@ export async function POST(request: Request) {
       try { const existing = await requireGuest(db, request, now); return json({ name: existing.name }); }
       catch { const name = cleanDisplayName(body.name); const session = await issueGuestSession(db, request, name, now); return new Response(JSON.stringify({ name }), { status: 201, headers: { 'Content-Type': 'application/json', 'Set-Cookie': session.cookie } }); }
     }
-    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], realtime_ticket: [30, 60_000], report: [5, 3_600_000] };
+    const limits: Record<string, [number, number]> = { submit: [18, 60_000], create: [8, 60_000], quick: [8, 60_000], matchmake: [8, 60_000], daily: [4, 60_000], join: [12, 60_000], realtime_ticket: [30, 60_000], report: [5, 3_600_000], update_profile: [8, 60_000] };
     const limit = limits[action];
     if (limit && !allowRequest(request, action, now, limit[0], limit[1])) return json({ error: 'Too many requests. Please wait a moment.' }, 429);
     const actor = await requireGuest(db, request, now);
     if (action === 'logout') {
       await db.prepare('UPDATE guest_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').bind(now, actor.sessionId).run();
       return new Response(JSON.stringify({ loggedOut: true }), { headers: { 'Content-Type': 'application/json', 'Set-Cookie': clearGuestSession(request) } });
+    }
+    if (action === 'update_profile') {
+      const name = cleanDisplayName(body.name); const rawAvatar = stringValue(body.avatar);
+      const avatar = /^[a-z0-9_-]{0,24}$/i.test(rawAvatar) ? rawAvatar || null : null;
+      await db.prepare('UPDATE users SET display_name = ?, avatar = ?, updated_at = ? WHERE id = ?').bind(name, avatar, now, actor.userId).run();
+      return json({ name, avatar });
     }
     if (action === 'realtime_ticket') {
       const code = stringValue(body.code).trim().toUpperCase();

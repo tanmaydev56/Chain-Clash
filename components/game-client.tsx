@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { ArrowLeft, ArrowRight, Bot, Check, Copy, Crown, Flame, Gamepad2, Globe2, Heart, LoaderCircle, LogOut, RotateCcw, Send, Share2, Sparkles, Swords, Trophy, Users, Volume2, VolumeX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -337,7 +338,7 @@ export function GameClient() {
       <div className="noise" />
       <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
         <div className="flex items-center gap-3"><Logo /><span className="text-lg font-black uppercase tracking-[-0.04em]">Chain Clash</span></div>
-        <div className="flex items-center gap-2"><span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span><Button disabled={!sessionReady} onClick={() => window.location.assign('/api/auth/google')} variant="outline" className="hidden border-white/15 bg-white/5 text-xs font-black hover:bg-white/10 sm:flex">{profile?.googleLinked ? 'Google linked' : 'Save with Google'}</Button>{profile?.googleLinked && <Button aria-label="Sign out" onClick={() => void logout()} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground"><LogOut /></Button>}<Button aria-label={soundOn ? 'Mute game sounds' : 'Enable game sounds'} onClick={() => { const next = !soundOn; setSoundOn(next); window.localStorage.setItem('chain-clash-sound', next ? 'on' : 'off'); if (next) playTone(true, 520); }} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground">{soundOn ? <Volume2 /> : <VolumeX />}</Button></div>
+        <div className="flex items-center gap-2"><span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-muted-foreground sm:flex"><Globe2 className="size-3.5 text-primary" /> Live multiplayer</span><Link href={profile ? '/profile' : '/signin'} className="hidden rounded-full border border-white/15 bg-white/5 px-3 py-2 text-xs font-black hover:bg-white/10 sm:block">{profile ? profile.googleLinked ? 'Profile' : 'Save progress' : 'Sign in'}</Link>{profile?.googleLinked && <Button aria-label="Sign out" onClick={() => void logout()} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground"><LogOut /></Button>}<Button aria-label={soundOn ? 'Mute game sounds' : 'Enable game sounds'} onClick={() => { const next = !soundOn; setSoundOn(next); window.localStorage.setItem('chain-clash-sound', next ? 'on' : 'off'); if (next) playTone(true, 520); }} variant="ghost" size="icon-sm" className="rounded-full border border-white/10 bg-white/5 text-muted-foreground">{soundOn ? <Volume2 /> : <VolumeX />}</Button></div>
       </header>
       <section className="relative z-10 mx-auto grid w-full max-w-7xl gap-10 px-5 pb-12 pt-7 lg:grid-cols-[0.82fr_1.18fr] lg:items-center lg:px-8 lg:pt-12">
         <div className="max-w-xl">
@@ -359,6 +360,7 @@ export function GameClient() {
       <section className="relative z-10 mx-auto grid w-full max-w-7xl gap-4 px-5 pb-16 sm:grid-cols-3 sm:px-8">
         {[['01', 'Pick a category', 'Animals, food, countries and everyday things.'], ['02', 'Chain the word', 'Your answer starts with the last letter played.'], ['03', 'Outlast rivals', 'Three lives. Twelve seconds. No repeats.']].map(([number, title, copy]) => <div key={number} className="rounded-2xl border border-white/8 bg-white/[0.025] p-5"><span className="font-mono text-xs font-black text-primary">{number}</span><h2 className="mt-4 text-lg font-black uppercase">{title}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{copy}</p></div>)}
       </section>
+      <nav className="relative z-10 mx-auto flex w-full max-w-7xl flex-wrap gap-4 px-5 pb-10 text-sm font-bold text-primary sm:px-8"><Link href="/profile">Profile</Link><Link href="/leaderboard">Leaderboard</Link><Link href="/modes">Modes</Link><Link href="/how-to-play">How to play</Link></nav>
 
       {profile && <section className="relative z-10 mx-auto w-full max-w-7xl px-5 pb-6 sm:px-8"><div className="grid grid-cols-3 gap-2 rounded-2xl border border-white/8 bg-white/[0.025] p-4 sm:grid-cols-6"><Stat label="Level" value={profile.stats.level} /><Stat label="XP" value={profile.stats.xp} /><Stat label="Rank" value={profile.stats.mmr} /><Stat label="Wins" value={`${profile.stats.wins}/${profile.stats.gamesPlayed}`} /><Stat label="Best" value={profile.stats.bestScore} /><Stat label="Streak" value={`${profile.stats.dailyStreak}d`} /></div></section>}
 

@@ -21,6 +21,9 @@ const localBindingConfig = {
           binding: d1,
           database_name: 'site-creator-d1',
           database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          // Local D1 follows the same checked-in migration path as production.
+          // vinext emits this Worker config under dist/server/.
+          migrations_dir: '../../drizzle',
         },
       ]
     : [],
