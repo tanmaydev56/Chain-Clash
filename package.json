@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "db:migrate:local": "npm run build && wrangler d1 migrations apply site-creator-d1 --local --config dist/server/wrangler.json",
+    "db:upgrade:local": "wrangler d1 execute site-creator-d1 --local --persist-to .wrangler/state --config realtime-worker/wrangler.jsonc --file drizzle/0007_google_account_linking.sql && wrangler d1 execute site-creator-d1 --local --persist-to .wrangler/state --config realtime-worker/wrangler.jsonc --file drizzle/0008_game_depth.sql",
     "prepare:cloudflare": "npm run build && node scripts/prepare-cloudflare-deploy.mjs",
     "deploy:main": "npm run prepare:cloudflare && wrangler deploy --config dist/server/wrangler.production.json",
     "build:realtime": "wrangler deploy --dry-run --config realtime-worker/wrangler.jsonc --outdir ../dist/realtime-worker",
